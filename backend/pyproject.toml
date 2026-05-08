@@ -1,0 +1,46 @@
+[project]
+name = "photogrid"
+version = "0.1.0"
+description = "Server-side renderer for PhotoGrid Studio"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "gunicorn>=22.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "python-multipart>=0.0.9",
+    "Pillow>=10.4",
+    "pillow-heif>=0.18",
+    "numpy>=1.26",
+    "python-magic>=0.4.27",
+    "structlog>=24.1",
+    "aiofiles>=24.1",
+]
+
+[project.optional-dependencies]
+vips = ["pyvips>=2.2"]
+dev  = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "ruff>=0.5", "mypy>=1.10"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["photogrid*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
