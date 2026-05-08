@@ -65,7 +65,7 @@ export function LeftPanel({ state, dispatch }: Props) {
   };
 
   return (
-    <div className="pane border-r border-line">
+    <div className="pane left border-r border-line">
       <div className="pane-header">Templates</div>
       <div className="grid grid-cols-2 gap-2 px-3 py-2 pb-3.5">
         {LAYOUT_PRESETS.map((p) => (

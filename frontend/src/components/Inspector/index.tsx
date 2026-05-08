@@ -23,7 +23,7 @@ export function Inspector({ state, dispatch, exportInfo }: Props) {
   }, [state.selectedCellId]);
 
   return (
-    <div className="pane border-l border-line">
+    <div className="pane right border-l border-line">
       <div className="tabs">
         <button className={`tab${tab === 'container' ? ' active' : ''}`} onClick={() => setTab('container')}>
           Container
