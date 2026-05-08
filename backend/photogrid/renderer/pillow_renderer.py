@@ -93,6 +93,8 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
         gap=cont.gap * scale,
         cols=grid.cols,
         rows=grid.rows,
+        col_sizes=grid.colSizes,
+        row_sizes=grid.rowSizes,
     )
 
     for cell in state.cells:
@@ -103,8 +105,12 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             row_span=cell.rowSpan,
             padding=cont.padding * scale,
             gap=cont.gap * scale,
-            track_w=tracks.track_w,
-            track_h=tracks.track_h,
+            col_widths=tracks.col_widths,
+            row_heights=tracks.row_heights,
+            dx=cell.dx * scale,
+            dy=cell.dy * scale,
+            dw=cell.dw * scale,
+            dh=cell.dh * scale,
         )
         cw_i = max(1, int(round(box[2])))
         ch_i = max(1, int(round(box[3])))
@@ -120,7 +126,7 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             tile = _empty_cell_tile(cw_i, ch_i, cell_mask)
         else:
             src = apply_css_filter(src, cell.filter)
-            tile = compose_cell(src, box, cell, cell_mask)
+            tile = compose_cell(src, box, cell, cell_mask, pixel_scale=scale)
 
         base.alpha_composite(tile, (int(round(box[0])), int(round(box[1]))))
 

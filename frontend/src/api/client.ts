@@ -79,15 +79,19 @@ async function makePreview(file: File, max = 1024): Promise<PreviewBlob> {
   return { blob, url: URL.createObjectURL(blob), w, h };
 }
 
-/** Picks a file from the user, uploads to the backend, returns the cell image ref. */
+/** Picks a file from the user, uploads to the backend, returns the cell image ref.
+ *  `w/h` are the ORIGINAL pixel dimensions (from the backend probe). The
+ *  `previewUrl` points to a downscaled preview, but the cell renders the IMG
+ *  box at original w×h so the on-screen layout matches what the backend
+ *  produces during export. */
 export async function ingestFile(file: File): Promise<CellImageRef> {
   const preview = await makePreview(file);
   const upload = await uploadImage(file);
   return {
     hash: upload.hash,
     name: file.name,
-    w: preview.w,
-    h: preview.h,
+    w: upload.w,
+    h: upload.h,
     mime: upload.mime,
     previewUrl: preview.url,
   };

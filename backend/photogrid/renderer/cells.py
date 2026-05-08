@@ -10,6 +10,9 @@ from ..models import Cell
 
 
 def fit_dims(iw: int, ih: int, cw: float, ch: float, fit: str) -> tuple[float, float]:
+    if fit == "native":
+        # Render at intrinsic pixel size; user positions via offsetX/offsetY.
+        return float(iw), float(ih)
     if fit == "fill":
         return cw, ch
     if fit == "contain":
@@ -30,14 +33,25 @@ def compose_cell(
     box: tuple[float, float, float, float],
     cell: Cell,
     cell_mask: Image.Image,
+    pixel_scale: float = 1.0,
 ) -> Image.Image:
-    """Compose a single cell into an RGBA tile sized to the cell box."""
+    """Compose a single cell into an RGBA tile sized to the cell box.
+
+    `pixel_scale` is the design-pixel → output-pixel ratio (Output.scale).
+    `box` and the returned tile are in output pixels; `cell.offsetX/Y` and
+    `cell.image.w/h` are in design pixels and are scaled accordingly.
+    """
     cx, cy, cw, ch = box
     cw_i = max(1, int(round(cw)))
     ch_i = max(1, int(round(ch)))
     iw, ih = img.size
 
-    dw, dh = fit_dims(iw, ih, cw, ch, cell.fit)
+    if cell.fit == "native":
+        # Render the source at intrinsic pixel size, scaled into output space.
+        dw = iw * pixel_scale
+        dh = ih * pixel_scale
+    else:
+        dw, dh = fit_dims(iw, ih, cw, ch, cell.fit)
     dw *= cell.scale
     dh *= cell.scale
     if cell.rotation and cell.fit == "cover":
@@ -54,9 +68,12 @@ def compose_cell(
     else:
         scaled = img.copy()
 
+    ox = cell.offsetX * pixel_scale
+    oy = cell.offsetY * pixel_scale
+
     # Position: centered in cell, then offset.
-    dx = (cw - dw_i) / 2 + cell.offsetX
-    dy = (ch - dh_i) / 2 + cell.offsetY
+    dx = (cw - dw_i) / 2 + ox
+    dy = (ch - dh_i) / 2 + oy
 
     # Rotate around the cell's centre (matching the prototype exporter.jsx).
     if cell.rotation:
@@ -67,8 +84,8 @@ def compose_cell(
         )
         # Recompute placement so the visible centre stays put.
         new_w, new_h = scaled.size
-        dx = (cw - new_w) / 2 + cell.offsetX
-        dy = (ch - new_h) / 2 + cell.offsetY
+        dx = (cw - new_w) / 2 + ox
+        dy = (ch - new_h) / 2 + oy
         dw_i, dh_i = new_w, new_h
 
     tile = Image.new("RGBA", (cw_i, ch_i), (0, 0, 0, 0))

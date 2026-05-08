@@ -71,20 +71,69 @@ try {
     if (count !== 8) throw new Error(`expected 8 resize handles, got ${count}`);
   });
 
-  await step('drag se handle expands cell colSpan/rowSpan', async () => {
-    const before = await page.locator('.pane.left .layer').first().locator('.meta').textContent();
-    const seHandle = page.locator('[data-handle-dir="se"]');
-    const box = await seHandle.boundingBox();
+  await step('drag se corner handle redistributes all cells', async () => {
+    const snap = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('[data-cell-id]')].map((c) => {
+          const r = c.getBoundingClientRect();
+          return { id: c.getAttribute('data-cell-id'), w: Math.round(r.width), h: Math.round(r.height) };
+        }),
+      );
+    const board = await page.evaluate(() => ({
+      w: document.querySelector('.board')?.style.width,
+      h: document.querySelector('.board')?.style.height,
+    }));
+    const before = await snap();
+    const se = page.locator('[data-handle-dir="se"]');
+    const box = await se.boundingBox();
     if (!box) throw new Error('se handle has no bounding box');
-    // Drag ~150px diagonally — at zoom ~78% with 4-col grid, that's > 1 track in each axis.
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + 200, box.y + 200, { steps: 12 });
     await page.mouse.up();
     await page.waitForTimeout(120);
-    const after = await page.locator('.pane.left .layer').first().locator('.meta').textContent();
-    if (before === after) throw new Error(`span did not change: before=${before} after=${after}`);
-    log(`  span: ${before} → ${after}`);
+    const after = await snap();
+    const boardAfter = await page.evaluate(() => ({
+      w: document.querySelector('.board')?.style.width,
+      h: document.querySelector('.board')?.style.height,
+    }));
+    const changed = after.filter((a, i) => a.w !== before[i].w || a.h !== before[i].h).length;
+    if (changed < before.length) {
+      throw new Error(`corner drag should change all ${before.length} cells; only ${changed} changed`);
+    }
+    if (board.w !== boardAfter.w || board.h !== boardAfter.h) {
+      throw new Error('container size changed during resize (should stay fixed)');
+    }
+    log(`  ${changed}/${before.length} cells redistributed`);
+  });
+
+  await step('drag e edge handle resizes only the row pair', async () => {
+    const snap = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('[data-cell-id]')].map((c) => {
+          const r = c.getBoundingClientRect();
+          return { id: c.getAttribute('data-cell-id'), x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width) };
+        }),
+      );
+    const before = await snap();
+    // Re-select the first cell so its edge handles render at the (possibly updated) coords.
+    await page.locator('[data-cell-id]').first().click();
+    await page.waitForTimeout(120);
+    const eh = page.locator('[data-handle-dir="e"]');
+    const box = await eh.boundingBox();
+    if (!box) throw new Error('e handle has no bounding box');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const after = await snap();
+    // Top row (cells 1, 2) should change. Bottom row (3, 4) should not.
+    const topChanged = (after[0].w !== before[0].w) || (after[1].w !== before[1].w);
+    const bottomUnchanged = after[2].w === before[2].w && after[3].w === before[3].w;
+    if (!topChanged) throw new Error('top-row cells did not change');
+    if (!bottomUnchanged) throw new Error('bottom-row cells changed (edge resize should be row-local)');
+    log(`  top Δw=${after[0].w - before[0].w}/${after[1].w - before[1].w}, bottom unchanged`);
   });
 
   await step('save template, then load it', async () => {

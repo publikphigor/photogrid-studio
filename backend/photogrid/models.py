@@ -8,7 +8,7 @@ ShapeId = Literal[
     "rect", "rounded", "squircle", "circle", "oval",
     "hexagon", "diamond", "arch", "blob", "heart",
 ]
-FitMode = Literal["cover", "contain", "fill"]
+FitMode = Literal["native", "cover", "contain", "fill"]
 FormatId = Literal["png", "jpg", "webp"]
 
 
@@ -27,7 +27,7 @@ class Cell(BaseModel):
     colSpan: int = Field(ge=1)
     rowSpan: int = Field(ge=1)
     image: CellImage | None = None
-    fit: FitMode = "cover"
+    fit: FitMode = "native"
     offsetX: float = 0
     offsetY: float = 0
     scale: float = 1.0
@@ -37,6 +37,12 @@ class Cell(BaseModel):
     cellRadius: float = 0  # 0..50 (%)
     cellBorder: float = 0  # px
     cellBorderColor: str = "#ffffff"
+    # Per-cell pixel offsets layered on top of the grid-computed box; used by
+    # the edge-resize handles (see frontend `EDGE_RESIZE`). Design-pixel space.
+    dx: float = 0
+    dy: float = 0
+    dw: float = 0
+    dh: float = 0
 
 
 class Container(BaseModel):
@@ -56,6 +62,8 @@ class Container(BaseModel):
 class Grid(BaseModel):
     cols: int = Field(ge=1, le=24)
     rows: int = Field(ge=1, le=24)
+    colSizes: list[float] | None = None
+    rowSizes: list[float] | None = None
 
 
 class Output(BaseModel):

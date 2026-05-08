@@ -13,6 +13,14 @@ import type { Action, Cell, CellImageRef, PhotoGridState } from '@/types';
 import { dimensionsFor } from '@/state/presets';
 import { cellShapeCSS, shapeCSS } from '@/state/shapes';
 import { ingestFile } from '@/api/client';
+import {
+  MIN_TRACK_FR,
+  cellPixelSize,
+  computeCellRect,
+  coverFitScale,
+  edgeNeighbors,
+  trackSizes,
+} from '@/state/reducer';
 
 interface Props {
   state: PhotoGridState;
@@ -21,21 +29,53 @@ interface Props {
 
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 
+/** Two distinct resize modes:
+ *  - 'track' (corners): drags global colSizes/rowSizes — affects every cell
+ *    in the column/row band. This is the wide redistribute.
+ *  - 'edge' (E/W/N/S): drags ONLY the dragged cell's edge boundary; adjusts
+ *    per-cell pixel offsets so other cells in the same column/row stay put. */
+type ResizeMode = 'track' | 'edge';
+
 interface ResizeState {
+  mode: ResizeMode;
   id: string;
   dir: ResizeDir;
   startX: number;
   startY: number;
-  startCol: number;
-  startRow: number;
-  startCs: number;
-  startRs: number;
-  trackW: number;
-  trackH: number;
-  lastCol: number;
-  lastRow: number;
-  lastCs: number;
-  lastRs: number;
+  /** Pixel-per-design-pixel conversion (screen-px / design-px). */
+  scaleX: number;
+  scaleY: number;
+
+  // ---- track mode (corners) ----
+  colGrow: number | null;
+  colShrink: number | null;
+  rowGrow: number | null;
+  rowShrink: number | null;
+  pxPerFrX: number;
+  pxPerFrY: number;
+  baseColSizes: number[];
+  baseRowSizes: number[];
+  signX: -1 | 0 | 1;
+  signY: -1 | 0 | 1;
+  lastColSizes: number[];
+  lastRowSizes: number[];
+
+  // ---- edge mode (E/W/N/S) ----
+  /** Axis: 'x' for E/W, 'y' for N/S. */
+  axis: 'x' | 'y' | null;
+  /** Mover's starting offsets (design pixels). */
+  moverBaseDx: number;
+  moverBaseDy: number;
+  moverBaseDw: number;
+  moverBaseDh: number;
+  /** Neighbor cells (along the edge) and their starting offsets. */
+  neighbors: { id: string; baseDx: number; baseDy: number; baseDw: number; baseDh: number }[];
+  /** Allowed delta range in design pixels (clamps so cells don't go below
+   *  MIN_CELL px on either side). */
+  deltaMin: number;
+  deltaMax: number;
+  /** Last dispatched delta to dedupe. */
+  lastDelta: number;
 }
 
 type DragKind = 'reposition' | 'swap' | 'move';
@@ -52,6 +92,8 @@ interface ActiveDrag {
   rotation: number;
   invZoom: number;
   ghostSrc: string;
+  /** True when the cell uses the 'native' fit (centered via translate(-50%,-50%)). */
+  nativeFit: boolean;
   // Latest cursor position (only read inside rAF callback).
   curX: number;
   curY: number;
@@ -161,97 +203,301 @@ export function StageCanvas({ state, dispatch }: Props) {
   };
 
   // ---- File picker per cell -----------------------------------------------
+  // Multi-select: first image lands in the clicked cell; surplus fills empty
+  // cells in row-major order; remaining images are discarded (no grid growth).
   const uploadToCell = (id: string) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
+    input.multiple = true;
     input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      try {
-        const img = await ingestFile(file);
-        dispatch({ type: 'UPDATE_CELL', id, patch: { image: img, offsetX: 0, offsetY: 0, scale: 1 } });
-      } catch (e) {
-        console.error('upload failed', e);
+      const files = [...(input.files ?? [])];
+      if (!files.length) return;
+      const imgs: CellImageRef[] = [];
+      for (const f of files) {
+        try {
+          imgs.push(await ingestFile(f));
+        } catch (e) {
+          console.error('upload failed', f.name, e);
+        }
+      }
+      if (!imgs.length) return;
+      const cell = cells.find((c) => c.id === id);
+      const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
+      const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
+      const cellSize = cell
+        ? cellPixelSize(cell, grid, innerW, innerH, container.gap)
+        : { w: dims.w, h: dims.h };
+      const useNative = (cell?.fit ?? 'native') === 'native';
+      const initScale = useNative
+        ? coverFitScale(cellSize.w, cellSize.h, imgs[0].w, imgs[0].h)
+        : 1;
+      dispatch({
+        type: 'UPDATE_CELL',
+        id,
+        patch: { image: imgs[0], offsetX: 0, offsetY: 0, scale: initScale },
+      });
+      if (imgs.length > 1) {
+        dispatch({ type: 'FILL_EMPTY_NO_GROW', images: imgs.slice(1) });
       }
     };
     input.click();
   };
 
-  // ---- Resize via 8 handles -----------------------------------------------
+  // ---- Resize via 8 handles ------------------------------------------------
+  // Corner handles (NE/NW/SE/SW): drag track sizes globally — every cell in
+  // the affected column/row band redistributes pixel width.
+  // Edge handles (E/W/N/S): drag only the moving cell's boundary with its
+  // immediate neighbors along that edge. Cells in the same column/row but
+  // outside that neighbor set keep their original boundary.
+  const MIN_CELL_PX = 24; // design-pixel floor for any cell side
   const onHandleDown = (e: MouseEvent, cell: Cell, dir: ResizeDir) => {
     e.stopPropagation();
     e.preventDefault();
     const rect = wrapRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const trackW = rect.width / grid.cols;
-    const trackH = rect.height / grid.rows;
+    const scaleX = rect.width / dims.w; // screen-px per design-px
+    const scaleY = rect.height / dims.h;
+    const isCorner = dir.length === 2; // ne/nw/se/sw
+    const baseColSizes = trackSizes(grid.colSizes, grid.cols);
+    const baseRowSizes = trackSizes(grid.rowSizes, grid.rows);
+
+    if (isCorner) {
+      // Track redistribution (current corner behavior).
+      const totalColFr = baseColSizes.reduce((a, b) => a + b, 0);
+      const totalRowFr = baseRowSizes.reduce((a, b) => a + b, 0);
+      const innerPxW = rect.width - container.padding * 2 * scaleX - container.gap * (grid.cols - 1) * scaleX;
+      const innerPxH = rect.height - container.padding * 2 * scaleY - container.gap * (grid.rows - 1) * scaleY;
+      const pxPerFrX = totalColFr > 0 ? innerPxW / totalColFr : 0;
+      const pxPerFrY = totalRowFr > 0 ? innerPxH / totalRowFr : 0;
+
+      let colGrow: number | null = null;
+      let colShrink: number | null = null;
+      let signX: -1 | 0 | 1 = 0;
+      if (dir.includes('e')) {
+        const right = cell.colStart - 1 + cell.colSpan - 1;
+        if (right + 1 < grid.cols) {
+          colGrow = right; colShrink = right + 1; signX = 1;
+        }
+      } else if (dir.includes('w')) {
+        const left = cell.colStart - 1;
+        if (left - 1 >= 0) {
+          colGrow = left; colShrink = left - 1; signX = -1;
+        }
+      }
+      let rowGrow: number | null = null;
+      let rowShrink: number | null = null;
+      let signY: -1 | 0 | 1 = 0;
+      if (dir.includes('s')) {
+        const bot = cell.rowStart - 1 + cell.rowSpan - 1;
+        if (bot + 1 < grid.rows) {
+          rowGrow = bot; rowShrink = bot + 1; signY = 1;
+        }
+      } else if (dir.includes('n')) {
+        const top = cell.rowStart - 1;
+        if (top - 1 >= 0) {
+          rowGrow = top; rowShrink = top - 1; signY = -1;
+        }
+      }
+      if (colGrow == null && rowGrow == null) return;
+      setResizing({
+        mode: 'track',
+        id: cell.id, dir, startX: e.clientX, startY: e.clientY,
+        scaleX, scaleY,
+        colGrow, colShrink, rowGrow, rowShrink,
+        pxPerFrX, pxPerFrY,
+        baseColSizes, baseRowSizes,
+        signX, signY,
+        lastColSizes: baseColSizes, lastRowSizes: baseRowSizes,
+        axis: null,
+        moverBaseDx: 0, moverBaseDy: 0, moverBaseDw: 0, moverBaseDh: 0,
+        neighbors: [], deltaMin: 0, deltaMax: 0, lastDelta: 0,
+      });
+      return;
+    }
+
+    // Edge handle: find immediate neighbors and constrain the drag delta so
+    // neither side shrinks below MIN_CELL_PX.
+    const side = dir as 'e' | 'w' | 'n' | 's';
+    const axis: 'x' | 'y' = side === 'e' || side === 'w' ? 'x' : 'y';
+    const neighbors = edgeNeighbors(cell, cells, side);
+    if (neighbors.length === 0) return; // edge of canvas → nothing to push
+
+    const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
+    const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
+    const moverRect = computeCellRect(cell, grid, innerW, innerH, container.padding, container.gap);
+
+    // Compute the smallest "give" the mover can take, and the smallest "give"
+    // any neighbor can give. We're free to push the boundary anywhere inside
+    // [-moverGive, +neighborGive] for E/S, and the inverse for W/N.
+    let moverGive: number;
+    let neighborGive: number;
+    if (axis === 'x') {
+      const grows = side === 'e';
+      moverGive = grows ? moverRect.w - MIN_CELL_PX : Infinity;
+      // For each neighbor, how much can its cross-axis side give?
+      neighborGive = Math.min(
+        ...neighbors.map((n) => {
+          const r = computeCellRect(n, grid, innerW, innerH, container.padding, container.gap);
+          return Math.max(0, r.w - MIN_CELL_PX);
+        }),
+      );
+      if (!grows) {
+        // W: dragging left grows mover, shrinks neighbors. So delta is negative.
+        // Allowed delta range: [-neighborGive, +moverGive_max], then we use
+        // sign so positive Δ shrinks mover. We unify by always letting Δ be
+        // the boundary's pixel shift along +x.
+      }
+    } else {
+      const grows = side === 's';
+      moverGive = grows ? moverRect.h - MIN_CELL_PX : Infinity;
+      neighborGive = Math.min(
+        ...neighbors.map((n) => {
+          const r = computeCellRect(n, grid, innerW, innerH, container.padding, container.gap);
+          return Math.max(0, r.h - MIN_CELL_PX);
+        }),
+      );
+      if (!grows) {
+        // see comment above
+      }
+    }
+
+    // Δ is the boundary's pixel shift along +x (or +y). Limits are how far
+    // the boundary can move in either direction without anyone going below
+    // MIN_CELL_PX.
+    let deltaMin: number;
+    let deltaMax: number;
+    if (side === 'e' || side === 's') {
+      // boundary on the +side of mover. Positive Δ grows mover, shrinks neighbors.
+      deltaMin = -(axis === 'x' ? moverRect.w - MIN_CELL_PX : moverRect.h - MIN_CELL_PX);
+      deltaMax = neighborGive;
+    } else {
+      // boundary on the -side of mover. Positive Δ shrinks mover, grows neighbors.
+      deltaMin = -neighborGive;
+      deltaMax = axis === 'x' ? moverRect.w - MIN_CELL_PX : moverRect.h - MIN_CELL_PX;
+    }
+    void moverGive; // silence unused
+
     setResizing({
-      id: cell.id,
-      dir,
-      startX: e.clientX,
-      startY: e.clientY,
-      startCol: cell.colStart,
-      startRow: cell.rowStart,
-      startCs: cell.colSpan,
-      startRs: cell.rowSpan,
-      trackW,
-      trackH,
-      lastCol: cell.colStart,
-      lastRow: cell.rowStart,
-      lastCs: cell.colSpan,
-      lastRs: cell.rowSpan,
+      mode: 'edge',
+      id: cell.id, dir, startX: e.clientX, startY: e.clientY,
+      scaleX, scaleY,
+      colGrow: null, colShrink: null, rowGrow: null, rowShrink: null,
+      pxPerFrX: 0, pxPerFrY: 0,
+      baseColSizes, baseRowSizes,
+      signX: 0, signY: 0,
+      lastColSizes: baseColSizes, lastRowSizes: baseRowSizes,
+      axis,
+      moverBaseDx: cell.dx ?? 0,
+      moverBaseDy: cell.dy ?? 0,
+      moverBaseDw: cell.dw ?? 0,
+      moverBaseDh: cell.dh ?? 0,
+      neighbors: neighbors.map((n) => ({
+        id: n.id,
+        baseDx: n.dx ?? 0,
+        baseDy: n.dy ?? 0,
+        baseDw: n.dw ?? 0,
+        baseDh: n.dh ?? 0,
+      })),
+      deltaMin, deltaMax, lastDelta: 0,
     });
   };
 
-  // Suppress redundant dispatches and rAF-throttle so reflow doesn't re-run mid-frame.
+  // rAF-throttle so we don't dispatch multiple times per frame mid-drag.
   useEffect(() => {
     if (!resizing) return;
     let raf: number | null = null;
     const latest = { x: resizing.startX, y: resizing.startY };
+    const applyTrack = () => {
+      const dxPx = (latest.x - resizing.startX) * resizing.signX;
+      const dyPx = (latest.y - resizing.startY) * resizing.signY;
+      let nextCol: number[] | undefined;
+      let nextRow: number[] | undefined;
+      if (resizing.colGrow != null && resizing.colShrink != null && resizing.pxPerFrX > 0) {
+        const dFr = dxPx / resizing.pxPerFrX;
+        const sizes = [...resizing.baseColSizes];
+        const maxDFr = sizes[resizing.colShrink] - MIN_TRACK_FR;
+        const minDFr = -(sizes[resizing.colGrow] - MIN_TRACK_FR);
+        const d = Math.max(minDFr, Math.min(maxDFr, dFr));
+        sizes[resizing.colGrow] += d;
+        sizes[resizing.colShrink] -= d;
+        nextCol = sizes;
+      }
+      if (resizing.rowGrow != null && resizing.rowShrink != null && resizing.pxPerFrY > 0) {
+        const dFr = dyPx / resizing.pxPerFrY;
+        const sizes = [...resizing.baseRowSizes];
+        const maxDFr = sizes[resizing.rowShrink] - MIN_TRACK_FR;
+        const minDFr = -(sizes[resizing.rowGrow] - MIN_TRACK_FR);
+        const d = Math.max(minDFr, Math.min(maxDFr, dFr));
+        sizes[resizing.rowGrow] += d;
+        sizes[resizing.rowShrink] -= d;
+        nextRow = sizes;
+      }
+      const sameCol =
+        nextCol == null ||
+        (nextCol.length === resizing.lastColSizes.length &&
+          nextCol.every((v, i) => Math.abs(v - resizing.lastColSizes[i]) < 1e-4));
+      const sameRow =
+        nextRow == null ||
+        (nextRow.length === resizing.lastRowSizes.length &&
+          nextRow.every((v, i) => Math.abs(v - resizing.lastRowSizes[i]) < 1e-4));
+      if (sameCol && sameRow) return;
+      if (nextCol) resizing.lastColSizes = nextCol;
+      if (nextRow) resizing.lastRowSizes = nextRow;
+      dispatch({ type: 'RESIZE_TRACKS', colSizes: nextCol, rowSizes: nextRow });
+    };
+    const applyEdge = () => {
+      // Cursor delta in design pixels along the axis; sign matches the
+      // boundary's drag direction (positive = boundary moves +x or +y).
+      const dx = resizing.scaleX > 0 ? (latest.x - resizing.startX) / resizing.scaleX : 0;
+      const dy = resizing.scaleY > 0 ? (latest.y - resizing.startY) / resizing.scaleY : 0;
+      const rawDelta = resizing.axis === 'x' ? dx : dy;
+      const delta = Math.max(resizing.deltaMin, Math.min(resizing.deltaMax, rawDelta));
+      if (Math.abs(delta - resizing.lastDelta) < 0.5) return; // sub-px change, skip
+      resizing.lastDelta = delta;
+
+      const updates: { id: string; dx?: number; dy?: number; dw?: number; dh?: number }[] = [];
+      const side = resizing.dir as 'e' | 'w' | 'n' | 's';
+      if (side === 'e') {
+        // Boundary on +x side of mover. Mover grows by Δ; each neighbor
+        // shifts +Δ on x and shrinks by Δ on width.
+        updates.push({ id: resizing.id, dw: resizing.moverBaseDw + delta });
+        for (const n of resizing.neighbors) {
+          updates.push({ id: n.id, dx: n.baseDx + delta, dw: n.baseDw - delta });
+        }
+      } else if (side === 'w') {
+        // Boundary on -x side of mover. Negative Δ (cursor left) grows
+        // mover; positive Δ shrinks it. Mover.dx tracks Δ; mover.dw mirrors.
+        updates.push({
+          id: resizing.id,
+          dx: resizing.moverBaseDx + delta,
+          dw: resizing.moverBaseDw - delta,
+        });
+        for (const n of resizing.neighbors) {
+          updates.push({ id: n.id, dw: n.baseDw + delta });
+        }
+      } else if (side === 's') {
+        updates.push({ id: resizing.id, dh: resizing.moverBaseDh + delta });
+        for (const n of resizing.neighbors) {
+          updates.push({ id: n.id, dy: n.baseDy + delta, dh: n.baseDh - delta });
+        }
+      } else {
+        // 'n'
+        updates.push({
+          id: resizing.id,
+          dy: resizing.moverBaseDy + delta,
+          dh: resizing.moverBaseDh - delta,
+        });
+        for (const n of resizing.neighbors) {
+          updates.push({ id: n.id, dh: n.baseDh + delta });
+        }
+      }
+      dispatch({ type: 'EDGE_RESIZE', updates });
+    };
     const apply = () => {
       raf = null;
-      const dx = latest.x - resizing.startX;
-      const dy = latest.y - resizing.startY;
-      const dc = Math.round(dx / resizing.trackW);
-      const dr = Math.round(dy / resizing.trackH);
-      let col = resizing.startCol;
-      let row = resizing.startRow;
-      let cs = resizing.startCs;
-      let rs = resizing.startRs;
-      if (resizing.dir.includes('e')) cs = Math.max(1, resizing.startCs + dc);
-      if (resizing.dir.includes('w')) {
-        const newCs = Math.max(1, resizing.startCs - dc);
-        col = Math.max(1, resizing.startCol + (resizing.startCs - newCs));
-        cs = newCs;
-      }
-      if (resizing.dir.includes('s')) rs = Math.max(1, resizing.startRs + dr);
-      if (resizing.dir.includes('n')) {
-        const newRs = Math.max(1, resizing.startRs - dr);
-        row = Math.max(1, resizing.startRow + (resizing.startRs - newRs));
-        rs = newRs;
-      }
-      // Skip if nothing changed since last dispatch.
-      if (
-        col === resizing.lastCol &&
-        row === resizing.lastRow &&
-        cs === resizing.lastCs &&
-        rs === resizing.lastRs
-      ) {
-        return;
-      }
-      resizing.lastCol = col;
-      resizing.lastRow = row;
-      resizing.lastCs = cs;
-      resizing.lastRs = rs;
-      dispatch({
-        type: 'RESIZE_CELL',
-        id: resizing.id,
-        colStart: col,
-        rowStart: row,
-        colSpan: cs,
-        rowSpan: rs,
-      });
+      if (resizing.mode === 'track') applyTrack();
+      else applyEdge();
     };
     const onMove = (e: globalThis.MouseEvent) => {
       latest.x = e.clientX;
@@ -280,20 +526,17 @@ export function StageCanvas({ state, dispatch }: Props) {
         dispatch({ type: 'SELECT', id: cell.id });
       }
 
-      // Empty cell: nothing to drag. Click-to-upload happens on mouseup
-      // (we record intent here so a cancelled mousedown doesn't open picker).
-      const wasSelectedBeforeClick = selectedRef.current === cell.id;
       const board = wrapRef.current;
       const boardRect = board?.getBoundingClientRect();
       const invZoom = boardRect && boardRect.width > 0 ? dims.w / boardRect.width : 1;
 
+      // Drag inside a populated cell repositions the image. Shift-drag swaps
+      // cell positions. Empty cells: drag is a no-op; click opens the picker.
       const kind: DragKind = !cell.image
         ? 'reposition' // dummy; never used because moved=false → click path
         : e.shiftKey
           ? 'move'
-          : wasSelectedBeforeClick
-            ? 'reposition'
-            : 'swap';
+          : 'reposition';
 
       dragRef.current = {
         kind,
@@ -307,6 +550,7 @@ export function StageCanvas({ state, dispatch }: Props) {
         rotation: cell.rotation,
         invZoom,
         ghostSrc: cell.image?.previewUrl ?? '',
+        nativeFit: cell.fit === 'native',
         curX: e.clientX,
         curY: e.clientY,
         moved: false,
@@ -331,7 +575,8 @@ export function StageCanvas({ state, dispatch }: Props) {
         const ny = drag.baseOffsetY + dy * drag.invZoom;
         drag.lastOffsetX = nx;
         drag.lastOffsetY = ny;
-        drag.imgEl.style.transform = `translate(${nx}px, ${ny}px) scale(${drag.scale}) rotate(${drag.rotation}deg)`;
+        const center = drag.nativeFit ? 'translate(-50%, -50%) ' : '';
+        drag.imgEl.style.transform = `${center}translate(${nx}px, ${ny}px) scale(${drag.scale}) rotate(${drag.rotation}deg)`;
         return;
       }
       // swap / move: track ghost + target cell
@@ -467,32 +712,45 @@ export function StageCanvas({ state, dispatch }: Props) {
                   }}
                 />
               )}
-              <div
-                className="grid-area"
-                style={{
-                  padding: container.padding,
-                  gap: container.gap,
-                  gridTemplateColumns: `repeat(${grid.cols}, 1fr)`,
-                  gridTemplateRows: `repeat(${grid.rows}, 1fr)`,
-                }}
-              >
-                {cells.map((cell) => (
-                  <CellView
-                    key={cell.id}
-                    cell={cell}
-                    selected={selectedCellId === cell.id}
-                    swapOver={ghost?.overId === cell.id}
-                    onMouseDown={onCellMouseDown}
-                    onUpload={() => uploadToCell(cell.id)}
-                    onRemove={() => dispatch({ type: 'REMOVE_CELL', id: cell.id })}
-                  />
-                ))}
+              <div className="grid-area">
+                {(() => {
+                  const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
+                  const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
+                  return cells.map((cell) => {
+                    const r = computeCellRect(
+                      cell,
+                      grid,
+                      innerW,
+                      innerH,
+                      container.padding,
+                      container.gap,
+                    );
+                    return (
+                      <CellView
+                        key={cell.id}
+                        cell={cell}
+                        rect={r}
+                        selected={selectedCellId === cell.id}
+                        swapOver={ghost?.overId === cell.id}
+                        onMouseDown={onCellMouseDown}
+                        onUpload={() => uploadToCell(cell.id)}
+                        onRemove={() => dispatch({ type: 'REMOVE_CELL', id: cell.id })}
+                        onScale={(c, factor) => {
+                          const next = Math.min(5, Math.max(0.05, c.scale * factor));
+                          if (Math.abs(next - c.scale) < 1e-4) return;
+                          dispatch({ type: 'UPDATE_CELL', id: c.id, patch: { scale: next } });
+                        }}
+                      />
+                    );
+                  });
+                })()}
               </div>
               <ResizeHandles
                 cell={cells.find((c) => c.id === selectedCellId)}
                 grid={grid}
                 container={container}
                 dims={dims}
+                zoom={zoom}
                 onHandleDown={onHandleDown}
               />
             </div>
@@ -570,10 +828,18 @@ export function StageCanvas({ state, dispatch }: Props) {
 // ---- Resize handle overlay (sits on top of grid, NOT inside cell) ---------
 interface ResizeHandlesProps {
   cell: Cell | undefined;
-  grid: { cols: number; rows: number };
+  grid: GridConfigShape;
   container: { padding: number; gap: number };
   dims: { w: number; h: number };
+  zoom: number;
   onHandleDown: (e: MouseEvent, cell: Cell, dir: ResizeDir) => void;
+}
+
+interface GridConfigShape {
+  cols: number;
+  rows: number;
+  colSizes?: number[];
+  rowSizes?: number[];
 }
 
 const ResizeHandles = memo(function ResizeHandles({
@@ -581,29 +847,33 @@ const ResizeHandles = memo(function ResizeHandles({
   grid,
   container,
   dims,
+  zoom,
   onHandleDown,
 }: ResizeHandlesProps) {
   if (!cell) return null;
-  const innerW = dims.w - container.padding * 2;
-  const innerH = dims.h - container.padding * 2;
-  const trackW = (innerW - container.gap * (grid.cols - 1)) / grid.cols;
-  const trackH = (innerH - container.gap * (grid.rows - 1)) / grid.rows;
-  const cx = container.padding + (cell.colStart - 1) * (trackW + container.gap);
-  const cy = container.padding + (cell.rowStart - 1) * (trackH + container.gap);
-  const cw = trackW * cell.colSpan + container.gap * (cell.colSpan - 1);
-  const ch = trackH * cell.rowSpan + container.gap * (cell.rowSpan - 1);
+  const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
+  const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
+  const r = computeCellRect(cell, grid as GridConfigShape, innerW, innerH, container.padding, container.gap);
+  const cx = r.x;
+  const cy = r.y;
+  const cw = r.w;
+  const ch = r.h;
 
-  const SIZE = 12; // handle px in design space
-  const HALF = SIZE / 2;
-  const positions: Record<ResizeDir, CSSProperties> = {
-    nw: { left: cx - HALF, top: cy - HALF, cursor: 'nwse-resize' },
-    n:  { left: cx + cw / 2 - HALF, top: cy - HALF, cursor: 'ns-resize' },
-    ne: { left: cx + cw - HALF, top: cy - HALF, cursor: 'nesw-resize' },
-    e:  { left: cx + cw - HALF, top: cy + ch / 2 - HALF, cursor: 'ew-resize' },
-    se: { left: cx + cw - HALF, top: cy + ch - HALF, cursor: 'nwse-resize' },
-    s:  { left: cx + cw / 2 - HALF, top: cy + ch - HALF, cursor: 'ns-resize' },
-    sw: { left: cx - HALF, top: cy + ch - HALF, cursor: 'nesw-resize' },
-    w:  { left: cx - HALF, top: cy + ch / 2 - HALF, cursor: 'ew-resize' },
+  // Counter-scale so handles render at a constant ~14px on screen even when
+  // the board is zoomed out (otherwise they shrink to a few pixels and feel
+  // unclickable).
+  const z = zoom > 0 ? zoom : 1;
+  const visual = 14 / z;     // visible pip
+  const hit = Math.max(visual, 22 / z); // larger invisible hit target
+  const positions: Record<ResizeDir, { x: number; y: number; cursor: string }> = {
+    nw: { x: cx, y: cy, cursor: 'nwse-resize' },
+    n:  { x: cx + cw / 2, y: cy, cursor: 'ns-resize' },
+    ne: { x: cx + cw, y: cy, cursor: 'nesw-resize' },
+    e:  { x: cx + cw, y: cy + ch / 2, cursor: 'ew-resize' },
+    se: { x: cx + cw, y: cy + ch, cursor: 'nwse-resize' },
+    s:  { x: cx + cw / 2, y: cy + ch, cursor: 'ns-resize' },
+    sw: { x: cx, y: cy + ch, cursor: 'nesw-resize' },
+    w:  { x: cx, y: cy + ch / 2, cursor: 'ew-resize' },
   };
   return (
     <div
@@ -614,52 +884,75 @@ const ResizeHandles = memo(function ResizeHandles({
         zIndex: 20,
       }}
     >
-      {(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as ResizeDir[]).map((d) => (
-        <div
-          key={d}
-          data-handle-dir={d}
-          onMouseDown={(e) => onHandleDown(e, cell, d)}
-          style={{
-            position: 'absolute',
-            width: SIZE,
-            height: SIZE,
-            background: 'var(--accent)',
-            border: '2px solid var(--handle-border)',
-            borderRadius: 3,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
-            pointerEvents: 'auto',
-            ...positions[d],
-          }}
-        />
-      ))}
+      {(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as ResizeDir[]).map((d) => {
+        const p = positions[d];
+        return (
+          <div
+            key={d}
+            data-handle-dir={d}
+            onMouseDown={(e) => onHandleDown(e, cell, d)}
+            style={{
+              position: 'absolute',
+              width: hit,
+              height: hit,
+              left: p.x - hit / 2,
+              top: p.y - hit / 2,
+              cursor: p.cursor,
+              pointerEvents: 'auto',
+              display: 'grid',
+              placeItems: 'center',
+              background: 'transparent',
+            }}
+          >
+            <div
+              style={{
+                width: visual,
+                height: visual,
+                background: 'var(--accent)',
+                border: `${2 / z}px solid var(--handle-border)`,
+                borderRadius: 3 / z,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+                pointerEvents: 'none',
+              }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 });
 
 interface CellViewProps {
   cell: Cell;
+  rect: { x: number; y: number; w: number; h: number };
   selected: boolean;
   swapOver: boolean;
   onMouseDown: (e: MouseEvent, cell: Cell, imgEl: HTMLImageElement | null) => void;
   onUpload: () => void;
   onRemove: () => void;
+  onScale: (cell: Cell, factor: number) => void;
 }
 
 
 const CellView = memo(function CellView({
   cell,
+  rect,
   selected,
   swapOver,
   onMouseDown,
   onUpload,
   onRemove,
+  onScale,
 }: CellViewProps) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const cellShape = cellShapeCSS(cell.shape, cell.cellRadius);
 
   const cellStyle: CSSProperties = {
-    gridColumn: `${cell.colStart} / span ${cell.colSpan}`,
-    gridRow: `${cell.rowStart} / span ${cell.rowSpan}`,
+    position: 'absolute',
+    left: rect.x,
+    top: rect.y,
+    width: rect.w,
+    height: rect.h,
     ...cellShape,
     boxShadow:
       cell.cellBorder > 0
@@ -667,12 +960,32 @@ const CellView = memo(function CellView({
         : 'none',
     viewTransitionName: `cell-${cell.id}`,
   };
+  // 'native' = render image at its intrinsic pixel size in design space, so
+  // the preview crops match what the backend will emit during export. The IMG
+  // box is set to image.w × image.h (the original dimensions); the previewUrl
+  // is upscaled to fill it (slightly blurry in preview, sharp on export).
+  // Other fits use the original CSS object-fit pipeline.
   const imgStyle: CSSProperties | undefined = cell.image
-    ? {
-        objectFit: cell.fit,
-        transform: `translate(${cell.offsetX}px, ${cell.offsetY}px) scale(${cell.scale}) rotate(${cell.rotation}deg)`,
-        filter: cell.filter !== 'none' ? cell.filter : 'none',
-      }
+    ? cell.fit === 'native'
+      ? {
+          width: cell.image.w,
+          height: cell.image.h,
+          maxWidth: 'none',
+          maxHeight: 'none',
+          top: '50%',
+          left: '50%',
+          transform: `translate(-50%, -50%) translate(${cell.offsetX}px, ${cell.offsetY}px) scale(${cell.scale}) rotate(${cell.rotation}deg)`,
+          filter: cell.filter !== 'none' ? cell.filter : 'none',
+        }
+      : {
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: cell.fit,
+          transform: `translate(${cell.offsetX}px, ${cell.offsetY}px) scale(${cell.scale}) rotate(${cell.rotation}deg)`,
+          filter: cell.filter !== 'none' ? cell.filter : 'none',
+        }
     : undefined;
 
   return (
@@ -682,6 +995,15 @@ const CellView = memo(function CellView({
       style={cellStyle}
       onMouseDown={(e) => onMouseDown(e, cell, imgRef.current)}
       onDoubleClick={onUpload}
+      onWheel={(e) => {
+        if (!cell.image) return;
+        // Wheel zooms the image inside the cell. Multiplicative step keeps
+        // both directions feeling symmetric across very large/small scales.
+        e.preventDefault();
+        e.stopPropagation();
+        const factor = Math.exp(-e.deltaY * 0.0015);
+        onScale(cell, factor);
+      }}
     >
       {cell.image?.previewUrl ? (
         <img

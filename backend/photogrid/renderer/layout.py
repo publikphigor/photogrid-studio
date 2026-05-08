@@ -5,7 +5,7 @@ Keep these constants in sync with the prototype's ``shapes.jsx``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 ASPECT_RATIOS: dict[str, tuple[int, int]] = {
     "1:1": (1, 1),
@@ -36,16 +36,35 @@ def dimensions_for(aspect: str, base_size: int) -> Size:
 class GridTracks:
     inner_w: float
     inner_h: float
-    track_w: float
-    track_h: float
+    # Per-track pixel widths/heights (length cols/rows). Uniform when the
+    # frontend hasn't redistributed track weights via resize handles.
+    col_widths: tuple[float, ...] = field(default_factory=tuple)
+    row_heights: tuple[float, ...] = field(default_factory=tuple)
 
 
-def grid_tracks(width: float, height: float, padding: float, gap: float, cols: int, rows: int) -> GridTracks:
-    inner_w = max(0.0, width - padding * 2)
-    inner_h = max(0.0, height - padding * 2)
-    track_w = (inner_w - gap * (cols - 1)) / cols if cols > 0 else 0.0
-    track_h = (inner_h - gap * (rows - 1)) / rows if rows > 0 else 0.0
-    return GridTracks(inner_w, inner_h, max(0.0, track_w), max(0.0, track_h))
+def grid_tracks(
+    width: float,
+    height: float,
+    padding: float,
+    gap: float,
+    cols: int,
+    rows: int,
+    col_sizes: list[float] | None = None,
+    row_sizes: list[float] | None = None,
+) -> GridTracks:
+    inner_w = max(0.0, width - padding * 2 - gap * (cols - 1))
+    inner_h = max(0.0, height - padding * 2 - gap * (rows - 1))
+    cw_weights = (
+        col_sizes if col_sizes and len(col_sizes) == cols else [1.0] * max(cols, 0)
+    )
+    rh_weights = (
+        row_sizes if row_sizes and len(row_sizes) == rows else [1.0] * max(rows, 0)
+    )
+    col_total = sum(cw_weights) or 1.0
+    row_total = sum(rh_weights) or 1.0
+    col_widths = tuple(max(0.0, w / col_total * inner_w) for w in cw_weights)
+    row_heights = tuple(max(0.0, h / row_total * inner_h) for h in rh_weights)
+    return GridTracks(inner_w, inner_h, col_widths, row_heights)
 
 
 def cell_box(
@@ -56,11 +75,18 @@ def cell_box(
     row_span: int,
     padding: float,
     gap: float,
-    track_w: float,
-    track_h: float,
+    col_widths: tuple[float, ...],
+    row_heights: tuple[float, ...],
+    dx: float = 0,
+    dy: float = 0,
+    dw: float = 0,
+    dh: float = 0,
 ) -> tuple[float, float, float, float]:
-    cx = padding + (col_start - 1) * (track_w + gap)
-    cy = padding + (row_start - 1) * (track_h + gap)
-    cw = track_w * col_span + gap * (col_span - 1)
-    ch = track_h * row_span + gap * (row_span - 1)
+    """Compute the cell's pixel rect. `dx/dy/dw/dh` are per-cell pixel offsets
+    set by the edge-resize handles (see frontend `Cell.dx/dy/dw/dh`). They must
+    already be in the same pixel space as the col/row widths."""
+    cx = padding + sum(col_widths[: col_start - 1]) + (col_start - 1) * gap + dx
+    cy = padding + sum(row_heights[: row_start - 1]) + (row_start - 1) * gap + dy
+    cw = sum(col_widths[col_start - 1 : col_start - 1 + col_span]) + gap * (col_span - 1) + dw
+    ch = sum(row_heights[row_start - 1 : row_start - 1 + row_span]) + gap * (row_span - 1) + dh
     return cx, cy, cw, ch

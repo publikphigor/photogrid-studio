@@ -478,7 +478,9 @@
   .grid-area {
     position: absolute;
     inset: 0;
-    display: grid;
+    /* Cells are absolutely positioned by the renderer so per-cell pixel
+     * offsets (edge-handle resizes) can shift one cell's boundary without
+     * disturbing the rest of its column/row. */
   }
 
   .cell {
@@ -523,12 +525,9 @@
   }
   .cell img.cell-img {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
     display: block;
-    object-fit: cover;
     pointer-events: none;
+    /* width/height/object-fit/transform are set inline per cell.fit. */
   }
   .cell .cell-controls {
     position: absolute;

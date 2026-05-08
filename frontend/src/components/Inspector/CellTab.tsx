@@ -5,6 +5,8 @@ import { Seg } from '@/components/controls/Seg';
 import { ColorField } from '@/components/controls/ColorField';
 import { SHAPES } from '@/state/shapes';
 import { ingestFile } from '@/api/client';
+import { cellPixelSize, coverFitScale } from '@/state/reducer';
+import { dimensionsFor } from '@/state/presets';
 
 interface Props {
   state: PhotoGridState;
@@ -48,7 +50,14 @@ export function CellTab({ state, dispatch }: Props) {
       if (!file) return;
       try {
         const img = await ingestFile(file);
-        set({ image: img, offsetX: 0, offsetY: 0, scale: 1 });
+        const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
+        const innerW =
+          dims.w - state.container.padding * 2 - state.container.gap * (state.grid.cols - 1);
+        const innerH =
+          dims.h - state.container.padding * 2 - state.container.gap * (state.grid.rows - 1);
+        const sz = cellPixelSize(cell, state.grid, innerW, innerH, state.container.gap);
+        const scale = cell.fit === 'native' ? coverFitScale(sz.w, sz.h, img.w, img.h) : 1;
+        set({ image: img, offsetX: 0, offsetY: 0, scale });
       } catch (e) {
         console.error('upload failed', e);
       }
@@ -106,6 +115,7 @@ export function CellTab({ state, dispatch }: Props) {
             <h4 className="section-title">Fit</h4>
             <Seg
               options={[
+                { value: 'native' as FitMode, label: 'Native' },
                 { value: 'cover' as FitMode, label: 'Cover' },
                 { value: 'contain' as FitMode, label: 'Contain' },
                 { value: 'fill' as FitMode, label: 'Fill' },
@@ -115,15 +125,27 @@ export function CellTab({ state, dispatch }: Props) {
             />
             <div className="row" style={{ marginTop: 10 }}>
               <label>Zoom</label>
-              <Slider value={cell.scale} min={0.5} max={3} step={0.05} onChange={(v) => set({ scale: v })} />
+              <Slider value={cell.scale} min={0.05} max={5} step={0.01} onChange={(v) => set({ scale: v })} />
             </div>
             <div className="row">
               <label>Offset X</label>
-              <Slider value={cell.offsetX} min={-200} max={200} onChange={(v) => set({ offsetX: v })} suffix="px" />
+              <Slider
+                value={cell.offsetX}
+                min={-Math.max(800, cell.image?.w ?? 0)}
+                max={Math.max(800, cell.image?.w ?? 0)}
+                onChange={(v) => set({ offsetX: v })}
+                suffix="px"
+              />
             </div>
             <div className="row">
               <label>Offset Y</label>
-              <Slider value={cell.offsetY} min={-200} max={200} onChange={(v) => set({ offsetY: v })} suffix="px" />
+              <Slider
+                value={cell.offsetY}
+                min={-Math.max(800, cell.image?.h ?? 0)}
+                max={Math.max(800, cell.image?.h ?? 0)}
+                onChange={(v) => set({ offsetY: v })}
+                suffix="px"
+              />
             </div>
             <div className="row">
               <label>Rotate</label>

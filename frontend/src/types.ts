@@ -10,7 +10,7 @@ export type ShapeId =
   | 'blob'
   | 'heart';
 
-export type FitMode = 'cover' | 'contain' | 'fill';
+export type FitMode = 'native' | 'cover' | 'contain' | 'fill';
 export type FormatId = 'png' | 'jpg' | 'webp';
 
 export interface CellImageRef {
@@ -40,6 +40,16 @@ export interface Cell {
   cellRadius: number;
   cellBorder: number;
   cellBorderColor: string;
+  /** Per-cell pixel offsets layered on top of the grid-computed box. Edge
+   *  resize handles (E/W/N/S) modify these so only the dragged cell + its
+   *  immediate neighbor along that edge change size; cells in the same column
+   *  but a different row keep their original boundary. Corner handles ignore
+   *  these and adjust the global track sizes instead. Optional for back-compat
+   *  with templates saved before this field existed. */
+  dx?: number;
+  dy?: number;
+  dw?: number;
+  dh?: number;
 }
 
 export type ContainerBgFit = 'cover' | 'contain' | 'fill';
@@ -62,6 +72,12 @@ export interface Container {
 export interface GridConfig {
   cols: number;
   rows: number;
+  /** Per-track size weights (fr-units). Length must match cols/rows when set;
+   *  when omitted, every track is treated as 1fr. Edits via the resize handles
+   *  redistribute weight between adjacent tracks so the container size never
+   *  changes — only the surrounding cells' pixel widths/heights do. */
+  colSizes?: number[];
+  rowSizes?: number[];
 }
 
 export interface OutputConfig {
@@ -104,10 +120,16 @@ export type Action =
       colStart?: number;
       rowStart?: number;
     }
+  | { type: 'RESIZE_TRACKS'; colSizes?: number[]; rowSizes?: number[] }
+  | {
+      type: 'EDGE_RESIZE';
+      updates: { id: string; dx?: number; dy?: number; dw?: number; dh?: number }[];
+    }
   | { type: 'SWAP_CELLS'; aId: string; bId: string } // swaps images, not positions
   | { type: 'SELECT'; id: string | null }
   | { type: 'SET_ZOOM'; zoom: number }
   | { type: 'FILL_FROM_FILES'; images: CellImageRef[] }
+  | { type: 'FILL_EMPTY_NO_GROW'; images: CellImageRef[] }
   | { type: 'RESET' }
   | { type: 'UNDO' }
   | { type: 'REDO' };
