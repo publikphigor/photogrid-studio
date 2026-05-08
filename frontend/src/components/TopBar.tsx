@@ -1,4 +1,4 @@
-import { Download, Moon, RotateCcw, Sun, Undo2, Redo2, Upload } from 'lucide-react';
+import { AlignCenterHorizontal, Download, Moon, RotateCcw, Sun, Undo2, Redo2, Upload } from 'lucide-react';
 import type { Action, PhotoGridState } from '@/types';
 import { dimensionsFor, estimateFileSize, formatBytes } from '@/state/presets';
 
@@ -72,6 +72,13 @@ export function TopBar({
       <span className="block w-px h-[22px]" style={{ background: 'var(--line)' }} />
       <button className="btn ghost" onClick={() => dispatch({ type: 'RESET' })} title="Start over">
         <RotateCcw size={14} /> Reset
+      </button>
+      <button
+        className="btn ghost"
+        onClick={() => dispatch({ type: 'ALIGN_GRID' })}
+        title="Align Grid: snap cells to a clean column/row layout and absorb whitespace"
+      >
+        <AlignCenterHorizontal size={14} /> Align Grid
       </button>
       <button
         className="btn ghost"

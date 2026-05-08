@@ -18,7 +18,7 @@ import {
   cellPixelSize,
   computeCellRect,
   coverFitScale,
-  edgeNeighbors,
+  pointToGridSlot,
   trackSizes,
 } from '@/state/reducer';
 
@@ -76,6 +76,11 @@ interface ResizeState {
   deltaMax: number;
   /** Last dispatched delta to dedupe. */
   lastDelta: number;
+  /** Edge position (design px) of the dragged side at drag start. */
+  moverEdgeStart: number;
+  /** Other cells' edges + canvas inner edges, used to render alignment guides. */
+  alignXs: number[];
+  alignYs: number[];
 }
 
 type DragKind = 'reposition' | 'swap' | 'move';
@@ -104,6 +109,12 @@ interface ActiveDrag {
   lastOffsetY: number;
   /** Cell id under the cursor, for swap/move target highlight. */
   overId: string | null;
+  /** Was this cell the PRIMARY selection at mousedown? Plain click on a
+   *  primary-selected populated cell triggers the file picker on mouseup. */
+  wasPrimary: boolean;
+  /** Was the click held with cmd/ctrl? Suppress click-as-picker behavior
+   *  because the modifier expressed multi-select intent. */
+  cmdOrCtrl: boolean;
 }
 
 interface GhostState {
@@ -117,7 +128,8 @@ interface GhostState {
 const CLICK_THRESHOLD = 4; // px before a mousedown becomes a drag
 
 export function StageCanvas({ state, dispatch }: Props) {
-  const { container, grid, cells, selectedCellId, canvas: canvasState } = state;
+  const { container, grid, cells, selectedCellIds, canvas: canvasState } = state;
+  const primarySelectedId = selectedCellIds[0] ?? null;
   const dims = dimensionsFor(container.aspect, state.output.baseSize);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -125,6 +137,10 @@ export function StageCanvas({ state, dispatch }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [resizing, setResizing] = useState<ResizeState | null>(null);
   const [ghost, setGhost] = useState<GhostState | null>(null);
+  // Alignment guides shown during a resize drag. Each value is a design-pixel
+  // coordinate where the mover edge currently lines up with another cell or
+  // a canvas edge — rendered as a thin dashed line.
+  const [guides, setGuides] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
 
   // Drag bookkeeping outside React state — no re-renders during drag.
   const dragRef = useRef<ActiveDrag | null>(null);
@@ -132,8 +148,8 @@ export function StageCanvas({ state, dispatch }: Props) {
   // Mirror of cells/state for use inside window listeners (avoid stale closures).
   const cellsRef = useRef(cells);
   cellsRef.current = cells;
-  const selectedRef = useRef(selectedCellId);
-  selectedRef.current = selectedCellId;
+  const selectedRef = useRef(selectedCellIds);
+  selectedRef.current = selectedCellIds;
 
   useEffect(() => {
     const el = stageRef.current;
@@ -261,6 +277,18 @@ export function StageCanvas({ state, dispatch }: Props) {
     const isCorner = dir.length === 2; // ne/nw/se/sw
     const baseColSizes = trackSizes(grid.colSizes, grid.cols);
     const baseRowSizes = trackSizes(grid.rowSizes, grid.rows);
+    // Snapshot alignment lines from every OTHER cell's edges + canvas inner
+    // edges. Used to render dashed guides while the user drags.
+    const alignInnerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
+    const alignInnerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
+    const alignXs: number[] = [container.padding, dims.w - container.padding];
+    const alignYs: number[] = [container.padding, dims.h - container.padding];
+    for (const c of cells) {
+      if (c.id === cell.id) continue;
+      const r = computeCellRect(c, grid, alignInnerW, alignInnerH, container.padding, container.gap);
+      alignXs.push(r.x, r.x + r.w);
+      alignYs.push(r.y, r.y + r.h);
+    }
 
     if (isCorner) {
       // Track redistribution (current corner behavior).
@@ -312,71 +340,130 @@ export function StageCanvas({ state, dispatch }: Props) {
         axis: null,
         moverBaseDx: 0, moverBaseDy: 0, moverBaseDw: 0, moverBaseDh: 0,
         neighbors: [], deltaMin: 0, deltaMax: 0, lastDelta: 0,
+        moverEdgeStart: 0,
+        alignXs, alignYs,
       });
       return;
     }
 
-    // Edge handle: find immediate neighbors and constrain the drag delta so
-    // neither side shrinks below MIN_CELL_PX.
+    // Edge handle. Two regimes:
+    //   1. There's a cell flush against the dragged edge → push that cell back
+    //      as the mover grows (current "cell pair" behavior).
+    //   2. There's whitespace (no cell touching that edge) → grow the mover
+    //      alone into the empty space, until it hits the next cell or the
+    //      canvas inner edge.
+    // We pick the regime per drag based on what's adjacent.
     const side = dir as 'e' | 'w' | 'n' | 's';
     const axis: 'x' | 'y' = side === 'e' || side === 'w' ? 'x' : 'y';
-    const neighbors = edgeNeighbors(cell, cells, side);
-    if (neighbors.length === 0) return; // edge of canvas → nothing to push
 
     const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
     const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
     const moverRect = computeCellRect(cell, grid, innerW, innerH, container.padding, container.gap);
+    const innerLeft = container.padding;
+    const innerTop = container.padding;
+    const innerRight = dims.w - container.padding;
+    const innerBottom = dims.h - container.padding;
 
-    // Compute the smallest "give" the mover can take, and the smallest "give"
-    // any neighbor can give. We're free to push the boundary anywhere inside
-    // [-moverGive, +neighborGive] for E/S, and the inverse for W/N.
-    let moverGive: number;
-    let neighborGive: number;
-    if (axis === 'x') {
-      const grows = side === 'e';
-      moverGive = grows ? moverRect.w - MIN_CELL_PX : Infinity;
-      // For each neighbor, how much can its cross-axis side give?
-      neighborGive = Math.min(
-        ...neighbors.map((n) => {
-          const r = computeCellRect(n, grid, innerW, innerH, container.padding, container.gap);
-          return Math.max(0, r.w - MIN_CELL_PX);
-        }),
-      );
-      if (!grows) {
-        // W: dragging left grows mover, shrinks neighbors. So delta is negative.
-        // Allowed delta range: [-neighborGive, +moverGive_max], then we use
-        // sign so positive Δ shrinks mover. We unify by always letting Δ be
-        // the boundary's pixel shift along +x.
+    // Pixel-space rects of every other cell, used to find immediate neighbors
+    // and the next obstacle in the dragged direction.
+    const otherRects = cells
+      .filter((c) => c.id !== cell.id)
+      .map((c) => ({
+        cell: c,
+        r: computeCellRect(c, grid, innerW, innerH, container.padding, container.gap),
+      }));
+
+    // Cells in the same grid layout are separated by `container.gap` pixels.
+    // A cell is an "immediate" neighbor when its left/right/top/bottom edge
+    // sits exactly `gap` away from the mover's edge (within EPS), AND the
+    // perpendicular ranges overlap.
+    const EPS = 1.5;
+    const gap = container.gap;
+    const overlapY = (r: { y: number; h: number }) =>
+      r.y < moverRect.y + moverRect.h && r.y + r.h > moverRect.y;
+    const overlapX = (r: { x: number; w: number }) =>
+      r.x < moverRect.x + moverRect.w && r.x + r.w > moverRect.x;
+
+    const immediates = otherRects.filter(({ r }) => {
+      if (side === 'e') return overlapY(r) && Math.abs(r.x - (moverRect.x + moverRect.w + gap)) < EPS;
+      if (side === 'w') return overlapY(r) && Math.abs(r.x + r.w + gap - moverRect.x) < EPS;
+      if (side === 's') return overlapX(r) && Math.abs(r.y - (moverRect.y + moverRect.h + gap)) < EPS;
+      return overlapX(r) && Math.abs(r.y + r.h + gap - moverRect.y) < EPS;
+    });
+
+    // Distance the mover's edge can travel into whitespace before hitting
+    // either the next cell or the canvas inner padding. Excludes the cells
+    // already counted as immediates.
+    let gapDistance: number;
+    if (side === 'e') {
+      gapDistance = innerRight - (moverRect.x + moverRect.w);
+      for (const { r } of otherRects) {
+        if (!overlapY(r)) continue;
+        if (r.x <= moverRect.x + moverRect.w + gap + EPS) continue;
+        gapDistance = Math.min(gapDistance, r.x - moverRect.x - moverRect.w - gap);
+      }
+    } else if (side === 'w') {
+      gapDistance = moverRect.x - innerLeft;
+      for (const { r } of otherRects) {
+        if (!overlapY(r)) continue;
+        if (r.x + r.w + gap >= moverRect.x - EPS) continue;
+        gapDistance = Math.min(gapDistance, moverRect.x - (r.x + r.w) - gap);
+      }
+    } else if (side === 's') {
+      gapDistance = innerBottom - (moverRect.y + moverRect.h);
+      for (const { r } of otherRects) {
+        if (!overlapX(r)) continue;
+        if (r.y <= moverRect.y + moverRect.h + gap + EPS) continue;
+        gapDistance = Math.min(gapDistance, r.y - moverRect.y - moverRect.h - gap);
       }
     } else {
-      const grows = side === 's';
-      moverGive = grows ? moverRect.h - MIN_CELL_PX : Infinity;
-      neighborGive = Math.min(
-        ...neighbors.map((n) => {
-          const r = computeCellRect(n, grid, innerW, innerH, container.padding, container.gap);
-          return Math.max(0, r.h - MIN_CELL_PX);
-        }),
-      );
-      if (!grows) {
-        // see comment above
+      gapDistance = moverRect.y - innerTop;
+      for (const { r } of otherRects) {
+        if (!overlapX(r)) continue;
+        if (r.y + r.h + gap >= moverRect.y - EPS) continue;
+        gapDistance = Math.min(gapDistance, moverRect.y - (r.y + r.h) - gap);
       }
     }
+    gapDistance = Math.max(0, gapDistance);
 
-    // Δ is the boundary's pixel shift along +x (or +y). Limits are how far
-    // the boundary can move in either direction without anyone going below
-    // MIN_CELL_PX.
+    // How far the mover can shrink before hitting MIN_CELL_PX.
+    const moverShrink = axis === 'x'
+      ? Math.max(0, moverRect.w - MIN_CELL_PX)
+      : Math.max(0, moverRect.h - MIN_CELL_PX);
+
+    // Δ is the boundary's pixel shift along +x or +y. For E/S: positive Δ
+    // grows the mover; for W/N: negative Δ grows it. We normalize to a single
+    // signed range so applyEdge stays simple.
     let deltaMin: number;
     let deltaMax: number;
-    if (side === 'e' || side === 's') {
-      // boundary on the +side of mover. Positive Δ grows mover, shrinks neighbors.
-      deltaMin = -(axis === 'x' ? moverRect.w - MIN_CELL_PX : moverRect.h - MIN_CELL_PX);
-      deltaMax = neighborGive;
+    if (immediates.length > 0) {
+      // Cell-pair mode: each immediate neighbor can give up at most
+      // (its size - MIN_CELL_PX). Cap mover growth by that, mover shrink by
+      // its own give.
+      const neighborGive = Math.min(
+        ...immediates.map(({ r }) =>
+          Math.max(0, axis === 'x' ? r.w - MIN_CELL_PX : r.h - MIN_CELL_PX),
+        ),
+      );
+      if (side === 'e' || side === 's') {
+        deltaMin = -moverShrink;
+        deltaMax = neighborGive;
+      } else {
+        deltaMin = -neighborGive;
+        deltaMax = moverShrink;
+      }
     } else {
-      // boundary on the -side of mover. Positive Δ shrinks mover, grows neighbors.
-      deltaMin = -neighborGive;
-      deltaMax = axis === 'x' ? moverRect.w - MIN_CELL_PX : moverRect.h - MIN_CELL_PX;
+      // Whitespace mode: mover grows alone. Direction depends on side.
+      if (side === 'e' || side === 's') {
+        deltaMin = -moverShrink;
+        deltaMax = gapDistance;
+      } else {
+        deltaMin = -gapDistance;
+        deltaMax = moverShrink;
+      }
     }
-    void moverGive; // silence unused
+
+    if (deltaMin === 0 && deltaMax === 0) return; // truly nothing to do
 
     setResizing({
       mode: 'edge',
@@ -392,7 +479,7 @@ export function StageCanvas({ state, dispatch }: Props) {
       moverBaseDy: cell.dy ?? 0,
       moverBaseDw: cell.dw ?? 0,
       moverBaseDh: cell.dh ?? 0,
-      neighbors: neighbors.map((n) => ({
+      neighbors: immediates.map(({ cell: n }) => ({
         id: n.id,
         baseDx: n.dx ?? 0,
         baseDy: n.dy ?? 0,
@@ -400,6 +487,14 @@ export function StageCanvas({ state, dispatch }: Props) {
         baseDh: n.dh ?? 0,
       })),
       deltaMin, deltaMax, lastDelta: 0,
+      moverEdgeStart: side === 'e'
+        ? moverRect.x + moverRect.w
+        : side === 'w'
+          ? moverRect.x
+          : side === 's'
+            ? moverRect.y + moverRect.h
+            : moverRect.y,
+      alignXs, alignYs,
     });
   };
 
@@ -408,6 +503,15 @@ export function StageCanvas({ state, dispatch }: Props) {
     if (!resizing) return;
     let raf: number | null = null;
     const latest = { x: resizing.startX, y: resizing.startY };
+    // Pixel tolerance for "edges align". Generous enough for the user to feel
+    // it from a normal drag speed, tight enough not to spam guides everywhere.
+    const ALIGN_EPS = 4;
+    const findAlignedX = (x: number) =>
+      resizing.alignXs.filter((v) => Math.abs(v - x) <= ALIGN_EPS);
+    const findAlignedY = (y: number) =>
+      resizing.alignYs.filter((v) => Math.abs(v - y) <= ALIGN_EPS);
+    const arraysEqual = (a: number[], b: number[]) =>
+      a.length === b.length && a.every((v, i) => v === b[i]);
     const applyTrack = () => {
       const dxPx = (latest.x - resizing.startX) * resizing.signX;
       const dyPx = (latest.y - resizing.startY) * resizing.signY;
@@ -453,6 +557,20 @@ export function StageCanvas({ state, dispatch }: Props) {
       const dy = resizing.scaleY > 0 ? (latest.y - resizing.startY) / resizing.scaleY : 0;
       const rawDelta = resizing.axis === 'x' ? dx : dy;
       const delta = Math.max(resizing.deltaMin, Math.min(resizing.deltaMax, rawDelta));
+      // Guides: light up alignment lines whenever the dragged edge is within
+      // ALIGN_EPS px of one. Computed in design space.
+      const edgeNow = resizing.moverEdgeStart + delta;
+      if (resizing.axis === 'x') {
+        const xs = findAlignedX(edgeNow);
+        setGuides((g) =>
+          arraysEqual(g.x, xs) && g.y.length === 0 ? g : { x: xs, y: [] },
+        );
+      } else {
+        const ys = findAlignedY(edgeNow);
+        setGuides((g) =>
+          arraysEqual(g.y, ys) && g.x.length === 0 ? g : { x: [], y: ys },
+        );
+      }
       if (Math.abs(delta - resizing.lastDelta) < 0.5) return; // sub-px change, skip
       resizing.lastDelta = delta;
 
@@ -504,7 +622,10 @@ export function StageCanvas({ state, dispatch }: Props) {
       latest.y = e.clientY;
       if (raf == null) raf = requestAnimationFrame(apply);
     };
-    const onUp = () => setResizing(null);
+    const onUp = () => {
+      setResizing(null);
+      setGuides({ x: [], y: [] });
+    };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     return () => {
@@ -521,8 +642,18 @@ export function StageCanvas({ state, dispatch }: Props) {
       const tgt = e.target as HTMLElement;
       if (tgt.closest('.cell-handle') || tgt.closest('.cell-controls button')) return;
 
-      // Selection happens immediately, regardless of click vs drag.
-      if (selectedRef.current !== cell.id) {
+      // Selection rules:
+      //  - cmd/ctrl+click toggles this cell into the multi-selection.
+      //  - plain click on a cell that isn't selected makes it the sole
+      //    selection (no picker yet).
+      //  - plain click on an already-primary-selected populated cell will be
+      //    treated as a "reopen" intent → opens the file picker on mouseup.
+      const wasSelected = selectedRef.current.includes(cell.id);
+      const wasPrimary = selectedRef.current[0] === cell.id;
+      const cmdOrCtrl = e.metaKey || e.ctrlKey;
+      if (cmdOrCtrl) {
+        dispatch({ type: 'SELECT_TOGGLE', id: cell.id });
+      } else if (!wasSelected) {
         dispatch({ type: 'SELECT', id: cell.id });
       }
 
@@ -530,10 +661,12 @@ export function StageCanvas({ state, dispatch }: Props) {
       const boardRect = board?.getBoundingClientRect();
       const invZoom = boardRect && boardRect.width > 0 ? dims.w / boardRect.width : 1;
 
-      // Drag inside a populated cell repositions the image. Shift-drag swaps
-      // cell positions. Empty cells: drag is a no-op; click opens the picker.
+      // Drag rules:
+      //  - shift+drag → swap cell positions (move kind).
+      //  - drag inside a populated cell → reposition image.
+      //  - drag inside an empty cell → no-op (click path runs on mouseup).
       const kind: DragKind = !cell.image
-        ? 'reposition' // dummy; never used because moved=false → click path
+        ? 'reposition'
         : e.shiftKey
           ? 'move'
           : 'reposition';
@@ -557,6 +690,8 @@ export function StageCanvas({ state, dispatch }: Props) {
         lastOffsetX: cell.offsetX,
         lastOffsetY: cell.offsetY,
         overId: null,
+        wasPrimary,
+        cmdOrCtrl,
       };
     },
     [dispatch, dims.w],
@@ -621,8 +756,16 @@ export function StageCanvas({ state, dispatch }: Props) {
       }
       const cell = cellsRef.current.find((c) => c.id === drag.cellId);
       if (!drag.moved) {
-        // Pure click — if cell is empty, open file picker.
-        if (cell && !cell.image) uploadToCell(cell.id);
+        // Pure click — interpret per the spec:
+        //  - empty cell → open the file picker.
+        //  - populated cell that was already PRIMARY → open the picker
+        //    (re-clicking a focused image opens "replace").
+        //  - populated cell that wasn't primary → just selected, no picker.
+        //  - cmd/ctrl modifier suppresses picker (it was a multi-select).
+        if (cell && !drag.cmdOrCtrl) {
+          if (!cell.image) uploadToCell(cell.id);
+          else if (drag.wasPrimary) uploadToCell(cell.id);
+        }
       } else if (drag.kind === 'reposition') {
         if (
           cell &&
@@ -647,6 +790,31 @@ export function StageCanvas({ state, dispatch }: Props) {
         ).startViewTransition;
         if (typeof startVT === 'function') startVT.call(document, () => dispatch(action));
         else dispatch(action);
+      } else if (drag.kind === 'move') {
+        // Shift+drag dropped on whitespace. Find the grid cell under the
+        // cursor and, if it's empty, snap the source to the largest empty
+        // rectangle anchored at that cell.
+        const board = wrapRef.current;
+        const rect = board?.getBoundingClientRect();
+        if (rect) {
+          const px = (drag.curX - rect.left) / (rect.width / dims.w);
+          const py = (drag.curY - rect.top) / (rect.height / dims.h);
+          const slot = pointToGridSlot(
+            px, py,
+            container.padding, container.gap, dims.w, dims.h,
+            grid, cellsRef.current,
+          );
+          if (slot) {
+            dispatch({
+              type: 'MOVE_CELL_TO_RECT',
+              id: drag.cellId,
+              colStart: slot.c,
+              rowStart: slot.r,
+              colSpan: slot.cs,
+              rowSpan: slot.rs,
+            });
+          }
+        }
       }
       dragRef.current = null;
       setGhost(null);
@@ -663,7 +831,12 @@ export function StageCanvas({ state, dispatch }: Props) {
   }, [dispatch]);
 
   const onStageMouseDown = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) dispatch({ type: 'SELECT', id: null });
+    // Click anywhere in the stage that isn't a cell or a resize handle clears
+    // the selection. The dark area around the canvas counts; the stage-foot
+    // toolbar is outside this element so its buttons aren't affected.
+    const t = e.target as HTMLElement;
+    if (t.closest('[data-cell-id]') || t.closest('[data-handle-dir]')) return;
+    dispatch({ type: 'SELECT', id: null });
   };
 
   const bg = container.bgTransparent ? 'transparent' : container.bg;
@@ -730,7 +903,8 @@ export function StageCanvas({ state, dispatch }: Props) {
                         key={cell.id}
                         cell={cell}
                         rect={r}
-                        selected={selectedCellId === cell.id}
+                        selected={selectedCellIds.includes(cell.id)}
+                        primary={primarySelectedId === cell.id}
                         swapOver={ghost?.overId === cell.id}
                         onMouseDown={onCellMouseDown}
                         onUpload={() => uploadToCell(cell.id)}
@@ -746,13 +920,53 @@ export function StageCanvas({ state, dispatch }: Props) {
                 })()}
               </div>
               <ResizeHandles
-                cell={cells.find((c) => c.id === selectedCellId)}
+                cell={cells.find((c) => c.id === primarySelectedId)}
                 grid={grid}
                 container={container}
                 dims={dims}
                 zoom={zoom}
                 onHandleDown={onHandleDown}
               />
+              {/* Alignment guides during a resize drag — thin dashed lines
+                  in design space; the parent .board scales them along with
+                  the rest of the canvas. */}
+              {(guides.x.length > 0 || guides.y.length > 0) && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                    zIndex: 25,
+                  }}
+                >
+                  {guides.x.map((x, i) => (
+                    <div
+                      key={`gx-${i}`}
+                      style={{
+                        position: 'absolute',
+                        left: x - 0.5,
+                        top: 0,
+                        width: 1,
+                        height: '100%',
+                        borderLeft: `1px dashed var(--accent)`,
+                      }}
+                    />
+                  ))}
+                  {guides.y.map((y, i) => (
+                    <div
+                      key={`gy-${i}`}
+                      style={{
+                        position: 'absolute',
+                        top: y - 0.5,
+                        left: 0,
+                        height: 1,
+                        width: '100%',
+                        borderTop: `1px dashed var(--accent)`,
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -926,6 +1140,7 @@ interface CellViewProps {
   cell: Cell;
   rect: { x: number; y: number; w: number; h: number };
   selected: boolean;
+  primary: boolean;
   swapOver: boolean;
   onMouseDown: (e: MouseEvent, cell: Cell, imgEl: HTMLImageElement | null) => void;
   onUpload: () => void;
@@ -938,6 +1153,7 @@ const CellView = memo(function CellView({
   cell,
   rect,
   selected,
+  primary,
   swapOver,
   onMouseDown,
   onUpload,
@@ -991,7 +1207,7 @@ const CellView = memo(function CellView({
   return (
     <div
       data-cell-id={cell.id}
-      className={`cell${selected ? ' selected' : ''}${!cell.image ? ' empty' : ''}${swapOver ? ' drag-over' : ''}`}
+      className={`cell${selected ? ' selected' : ''}${primary ? ' primary' : ''}${!cell.image ? ' empty' : ''}${swapOver ? ' drag-over' : ''}`}
       style={cellStyle}
       onMouseDown={(e) => onMouseDown(e, cell, imgRef.current)}
       onDoubleClick={onUpload}

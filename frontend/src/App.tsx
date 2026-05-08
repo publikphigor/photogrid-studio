@@ -107,18 +107,31 @@ export function App() {
         e.preventDefault();
         dispatch({ type: 'REDO' });
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (state.selectedCellId) {
+        if (state.selectedCellIds.length) {
           e.preventDefault();
-          dispatch({ type: 'REMOVE_CELL', id: state.selectedCellId });
+          // Remove every selected cell. Iterate in reverse so removals don't
+          // change the indexes of pending ids (REMOVE_CELL works by id, not
+          // index, but successive dispatches are independent reductions).
+          for (const id of state.selectedCellIds) {
+            dispatch({ type: 'REMOVE_CELL', id });
+          }
         }
+      } else if ((meta && e.key.toLowerCase() === 'm') && state.selectedCellIds.length >= 2) {
+        e.preventDefault();
+        dispatch({ type: 'MERGE_CELLS', ids: state.selectedCellIds });
       } else if (meta && e.key.toLowerCase() === 'e') {
         e.preventDefault();
         void handleExport();
+      } else if (e.key === 'Escape') {
+        if (state.selectedCellIds.length) {
+          e.preventDefault();
+          dispatch({ type: 'SELECT', id: null });
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [state.selectedCellId, handleExport, dispatch]);
+  }, [state.selectedCellIds, handleExport, dispatch]);
 
   return (
     <div className="grid h-full" style={{ gridTemplateRows: '48px 1fr' }}>

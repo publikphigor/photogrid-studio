@@ -1,4 +1,4 @@
-import { Image as ImageIcon, Plus, X } from 'lucide-react';
+import { AlignCenterHorizontal, Image as ImageIcon, Plus, X } from 'lucide-react';
 import type {
   Action,
   Container,
@@ -96,6 +96,13 @@ export function ContainerTab({ state, dispatch }: Props) {
         </div>
         <button className="btn w-full mt-1" onClick={() => dispatch({ type: 'ADD_CELL' })}>
           <Plus size={14} /> Add Cell
+        </button>
+        <button
+          className="btn w-full mt-1"
+          onClick={() => dispatch({ type: 'ALIGN_GRID' })}
+          title="Snap cells to a clean column/row grid; absorb leftover whitespace"
+        >
+          <AlignCenterHorizontal size={14} /> Align Grid
         </button>
       </div>
 

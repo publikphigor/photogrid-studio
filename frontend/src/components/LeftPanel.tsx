@@ -143,8 +143,14 @@ export function LeftPanel({ state, dispatch }: Props) {
           {state.cells.map((c, i) => (
             <div
               key={c.id}
-              className={`layer${state.selectedCellId === c.id ? ' active' : ''}`}
-              onClick={() => dispatch({ type: 'SELECT', id: c.id })}
+              className={`layer${state.selectedCellIds.includes(c.id) ? ' active' : ''}`}
+              onClick={(e) =>
+                dispatch(
+                  e.metaKey || e.ctrlKey
+                    ? { type: 'SELECT_TOGGLE', id: c.id }
+                    : { type: 'SELECT', id: c.id },
+                )
+              }
             >
               <div
                 className="thumb"

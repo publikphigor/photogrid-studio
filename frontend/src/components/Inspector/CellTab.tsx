@@ -1,4 +1,4 @@
-import { Trash2, Upload } from 'lucide-react';
+import { Layers, Trash2, Upload } from 'lucide-react';
 import type { Action, Cell, FitMode, PhotoGridState, ShapeId } from '@/types';
 import { Slider } from '@/components/controls/Slider';
 import { Seg } from '@/components/controls/Seg';
@@ -25,7 +25,7 @@ const FILTERS = [
 ];
 
 export function CellTab({ state, dispatch }: Props) {
-  const cell = state.cells.find((c) => c.id === state.selectedCellId);
+  const cell = state.cells.find((c) => c.id === state.selectedCellIds[0]);
   if (!cell) {
     return (
       <div
@@ -67,6 +67,21 @@ export function CellTab({ state, dispatch }: Props) {
 
   return (
     <>
+      {state.selectedCellIds.length >= 2 && (
+        <div className="section">
+          <h4 className="section-title">{state.selectedCellIds.length} cells selected</h4>
+          <button
+            className="btn w-full"
+            onClick={() => dispatch({ type: 'MERGE_CELLS', ids: state.selectedCellIds })}
+            title="Merge selected cells into one (first cell's image wins) — ⌘M"
+          >
+            <Layers size={14} /> Merge into one
+          </button>
+          <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'var(--text-3)' }}>
+            Inspector below shows the primary cell — the one whose image survives the merge.
+          </p>
+        </div>
+      )}
       <div className="section">
         <h4 className="section-title">Image</h4>
         {cell.image ? (

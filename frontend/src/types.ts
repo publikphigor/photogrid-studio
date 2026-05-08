@@ -96,7 +96,10 @@ export interface PhotoGridState {
   container: Container;
   grid: GridConfig;
   cells: Cell[];
-  selectedCellId: string | null;
+  /** Selected cells, in the order the user picked them. The first id is the
+   *  "primary" — the one the inspector reads by default; merge uses its image
+   *  as the surviving cell's content. Empty array = nothing selected. */
+  selectedCellIds: string[];
   output: OutputConfig;
   canvas: CanvasConfig;
 }
@@ -126,7 +129,11 @@ export type Action =
       updates: { id: string; dx?: number; dy?: number; dw?: number; dh?: number }[];
     }
   | { type: 'SWAP_CELLS'; aId: string; bId: string } // swaps images, not positions
+  | { type: 'MOVE_CELL_TO_RECT'; id: string; colStart: number; rowStart: number; colSpan: number; rowSpan: number }
   | { type: 'SELECT'; id: string | null }
+  | { type: 'SELECT_TOGGLE'; id: string }
+  | { type: 'MERGE_CELLS'; ids: string[] }
+  | { type: 'ALIGN_GRID' }
   | { type: 'SET_ZOOM'; zoom: number }
   | { type: 'FILL_FROM_FILES'; images: CellImageRef[] }
   | { type: 'FILL_EMPTY_NO_GROW'; images: CellImageRef[] }

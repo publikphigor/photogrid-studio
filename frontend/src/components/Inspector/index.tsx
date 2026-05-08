@@ -14,13 +14,14 @@ interface Props {
 
 export function Inspector({ state, dispatch, exportInfo }: Props) {
   const [tab, setTab] = useState<TabId>('container');
-  const selected = state.cells.find((c) => c.id === state.selectedCellId);
+  const primaryId = state.selectedCellIds[0] ?? null;
+  const selected = state.cells.find((c) => c.id === primaryId);
 
   useEffect(() => {
     if (selected && tab === 'container') setTab('cell');
     if (!selected && tab === 'cell') setTab('container');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.selectedCellId]);
+  }, [primaryId]);
 
   return (
     <div className="pane right border-l border-line">

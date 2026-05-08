@@ -498,6 +498,13 @@
     outline-offset: -1px;
     z-index: 3;
   }
+  /* Multi-select: secondary cells get a softer outline so the user sees the
+   * primary (which the inspector reads) as the brighter one. */
+  .cell.selected:not(.primary) {
+    outline-style: dashed;
+    outline-color: var(--accent);
+    opacity: 1;
+  }
   .cell.empty {
     display: flex;
     align-items: center;

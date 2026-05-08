@@ -33,7 +33,7 @@ function write(list: SavedTemplate[]): void {
 function clean(state: PhotoGridState): PhotoGridState {
   return {
     ...state,
-    selectedCellId: null,
+    selectedCellIds: [],
     canvas: { zoom: 1 },
     cells: state.cells.map((c) =>
       c.image

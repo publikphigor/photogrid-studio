@@ -1,5 +1,5 @@
 import type { Action, Cell, GridConfig, PhotoGridState } from '@/types';
-import { LAYOUT_PRESETS } from './presets';
+import { LAYOUT_PRESETS, dimensionsFor } from './presets';
 
 let _id = 0;
 export const uid = (p = 'c'): string => `${p}_${(++_id).toString(36)}`;
@@ -49,7 +49,7 @@ export function defaultState(): PhotoGridState {
       colSpan: c.cs ?? 1,
       rowSpan: c.rs ?? 1,
     })),
-    selectedCellId: null,
+    selectedCellIds: [],
     output: { format: 'png', quality: 0.92, scale: 2, baseSize: 1200, filename: 'photogrid' },
     canvas: { zoom: 1 },
   };
@@ -233,18 +233,23 @@ function reflowAroundMover(
 }
 
 /** After a cell is removed, try to absorb the freed area so no whitespace
- *  is left. Strategy:
+ *  is left. Strategy, in order:
  *    1. If a column or row band the cell occupied is now entirely empty, drop
  *       those tracks (and shift the remaining cells / colSizes / rowSizes).
  *    2. Otherwise, if a neighbor's row band exactly matches the removed cell's
  *       row band and they're horizontally adjacent, expand the neighbor across
  *       the freed columns. Same trick for vertical adjacency.
- *  When neither applies we leave the gap (the layout is too irregular for an
- *  obvious absorption). */
+ *    3. Fall back to extending an adjacent cell's per-cell pixel offsets so it
+ *       visually covers the freed pixel rect (for irregular layouts where the
+ *       grid-coord strategies don't apply). */
 function compactAfterRemoval(
   cells: Cell[],
   grid: GridConfig,
   removed: Cell,
+  containerPadding: number,
+  containerGap: number,
+  designW: number,
+  designH: number,
 ): { cells: Cell[]; grid: GridConfig } {
   // ---- Strategy 1: drop empty tracks --------------------------------------
   const emptyCols: number[] = [];
@@ -345,7 +350,299 @@ function compactAfterRemoval(
     };
   }
 
-  return { cells, grid };
+  // ---- Strategy 3: extend an adjacent cell via pixel offsets --------------
+  // Compute the freed pixel rect (using grid coords pre-removal) and the rects
+  // of all remaining cells. Pick the candidate adjacent cell that shares the
+  // longest pixel-edge with the freed rect and extend its dx/dy/dw/dh to
+  // visually swallow the freed area.
+  const innerW = designW - containerPadding * 2 - containerGap * (grid.cols - 1);
+  const innerH = designH - containerPadding * 2 - containerGap * (grid.rows - 1);
+  const removedRect = computeCellRect(removed, grid, innerW, innerH, containerPadding, containerGap);
+  const cellRects = cells.map((c) => ({
+    cell: c,
+    rect: computeCellRect(c, grid, innerW, innerH, containerPadding, containerGap),
+  }));
+
+  type Candidate = {
+    cell: Cell;
+    side: 'e' | 'w' | 's' | 'n';
+    sharedEdge: number;
+    /** The cell's pixel rect after extension. */
+    extended: { x: number; y: number; w: number; h: number };
+  };
+  const candidates: Candidate[] = [];
+  const EPS = 1.5;
+  const spanH = removedRect.w + containerGap;
+  const spanV = removedRect.h + containerGap;
+  for (const { cell, rect } of cellRects) {
+    // East-side candidate: cell sits left of removed
+    if (Math.abs(rect.x + rect.w + containerGap - removedRect.x) < EPS) {
+      const overlap = Math.min(rect.y + rect.h, removedRect.y + removedRect.h) - Math.max(rect.y, removedRect.y);
+      if (overlap > 0) {
+        candidates.push({
+          cell, side: 'e', sharedEdge: overlap,
+          extended: { x: rect.x, y: rect.y, w: rect.w + spanH, h: rect.h },
+        });
+      }
+    }
+    // West-side candidate: cell sits right of removed
+    if (Math.abs(removedRect.x + removedRect.w + containerGap - rect.x) < EPS) {
+      const overlap = Math.min(rect.y + rect.h, removedRect.y + removedRect.h) - Math.max(rect.y, removedRect.y);
+      if (overlap > 0) {
+        candidates.push({
+          cell, side: 'w', sharedEdge: overlap,
+          extended: { x: rect.x - spanH, y: rect.y, w: rect.w + spanH, h: rect.h },
+        });
+      }
+    }
+    // South-side candidate: cell sits above removed
+    if (Math.abs(rect.y + rect.h + containerGap - removedRect.y) < EPS) {
+      const overlap = Math.min(rect.x + rect.w, removedRect.x + removedRect.w) - Math.max(rect.x, removedRect.x);
+      if (overlap > 0) {
+        candidates.push({
+          cell, side: 's', sharedEdge: overlap,
+          extended: { x: rect.x, y: rect.y, w: rect.w, h: rect.h + spanV },
+        });
+      }
+    }
+    // North-side candidate: cell sits below removed
+    if (Math.abs(removedRect.y + removedRect.h + containerGap - rect.y) < EPS) {
+      const overlap = Math.min(rect.x + rect.w, removedRect.x + removedRect.w) - Math.max(rect.x, removedRect.x);
+      if (overlap > 0) {
+        candidates.push({
+          cell, side: 'n', sharedEdge: overlap,
+          extended: { x: rect.x, y: rect.y - spanV, w: rect.w, h: rect.h + spanV },
+        });
+      }
+    }
+  }
+
+  // Reject candidates whose extension would overlap any other cell's rect
+  // (other than the candidate itself). Better to leave whitespace than to
+  // visually clobber a sibling cell.
+  const overlapsOther = (cand: Candidate) =>
+    cellRects.some(({ cell, rect }) => {
+      if (cell.id === cand.cell.id) return false;
+      return (
+        cand.extended.x < rect.x + rect.w &&
+        cand.extended.x + cand.extended.w > rect.x &&
+        cand.extended.y < rect.y + rect.h &&
+        cand.extended.y + cand.extended.h > rect.y
+      );
+    });
+  const safe = candidates.filter((c) => !overlapsOther(c));
+  if (safe.length === 0) {
+    return { cells, grid };
+  }
+  safe.sort((a, b) => b.sharedEdge - a.sharedEdge);
+  const best = safe[0];
+  return {
+    cells: cells.map((c) => {
+      if (c.id !== best.cell.id) return c;
+      switch (best.side) {
+        case 'e':
+          return { ...c, dw: (c.dw ?? 0) + spanH };
+        case 'w':
+          return { ...c, dx: (c.dx ?? 0) - spanH, dw: (c.dw ?? 0) + spanH };
+        case 's':
+          return { ...c, dh: (c.dh ?? 0) + spanV };
+        case 'n':
+          return { ...c, dy: (c.dy ?? 0) - spanV, dh: (c.dh ?? 0) + spanV };
+      }
+    }),
+    grid,
+  };
+}
+
+/** Translate a point in design pixel space to a grid (col, row) tuple, using
+ *  current track widths and gap. Returns null if the point lies outside the
+ *  inner canvas. Then expands outwards from that slot to find the largest
+ *  empty rectangle that contains it (used for "drop on whitespace" UX). */
+export function pointToGridSlot(
+  px: number,
+  py: number,
+  padding: number,
+  gap: number,
+  designW: number,
+  designH: number,
+  grid: GridConfig,
+  cells: Cell[],
+): { c: number; r: number; cs: number; rs: number } | null {
+  if (px < padding || py < padding || px > designW - padding || py > designH - padding) {
+    return null;
+  }
+  const innerW = designW - padding * 2 - gap * (grid.cols - 1);
+  const innerH = designH - padding * 2 - gap * (grid.rows - 1);
+  const colW = trackSizes(grid.colSizes, grid.cols);
+  const rowH = trackSizes(grid.rowSizes, grid.rows);
+  const totalCol = colW.reduce((a, b) => a + b, 0) || 1;
+  const totalRow = rowH.reduce((a, b) => a + b, 0) || 1;
+  // Walk track boundaries left-to-right.
+  let acc = padding;
+  let col = 0;
+  for (let i = 0; i < grid.cols; i += 1) {
+    const w = (colW[i] / totalCol) * innerW;
+    if (px <= acc + w) { col = i + 1; break; }
+    acc += w + gap;
+    col = i + 2;
+  }
+  if (col > grid.cols) col = grid.cols;
+  acc = padding;
+  let row = 0;
+  for (let i = 0; i < grid.rows; i += 1) {
+    const h = (rowH[i] / totalRow) * innerH;
+    if (py <= acc + h) { row = i + 1; break; }
+    acc += h + gap;
+    row = i + 2;
+  }
+  if (row > grid.rows) row = grid.rows;
+  // If the slot is occupied, no whitespace there.
+  const occ = buildOccupancy(cells, grid);
+  if (occ[(row - 1) * grid.cols + (col - 1)]) return null;
+  // Expand outward from (col, row) to find the maximal empty rectangle.
+  let c1 = col;
+  while (c1 - 1 >= 1 && !occ[(row - 1) * grid.cols + (c1 - 2)]) c1 -= 1;
+  let c2 = col;
+  while (c2 + 1 <= grid.cols && !occ[(row - 1) * grid.cols + c2]) c2 += 1;
+  let r1 = row;
+  rowUp: while (r1 - 1 >= 1) {
+    for (let cc = c1; cc <= c2; cc += 1) {
+      if (occ[(r1 - 2) * grid.cols + (cc - 1)]) break rowUp;
+    }
+    r1 -= 1;
+  }
+  let r2 = row;
+  rowDown: while (r2 + 1 <= grid.rows) {
+    for (let cc = c1; cc <= c2; cc += 1) {
+      if (occ[r2 * grid.cols + (cc - 1)]) break rowDown;
+    }
+    r2 += 1;
+  }
+  return { c: c1, r: r1, cs: c2 - c1 + 1, rs: r2 - r1 + 1 };
+}
+
+/** Find the largest rectangular empty region in the current grid (in grid
+ *  coords). Returns null when no empty slot exists. Used by ADD_CELL so a new
+ *  cell automatically fills the biggest whitespace instead of dropping into
+ *  the first row-major empty slot. */
+export function findMaxEmptyRect(
+  cells: Cell[],
+  grid: GridConfig,
+): { c: number; r: number; cs: number; rs: number } | null {
+  const occ = buildOccupancy(cells, grid);
+  let best: { c: number; r: number; cs: number; rs: number } | null = null;
+  let bestArea = 0;
+  for (let r = 1; r <= grid.rows; r++) {
+    for (let c = 1; c <= grid.cols; c++) {
+      if (occ[(r - 1) * grid.cols + (c - 1)]) continue;
+      // Maximum width starting at (c, r) — empty span on this row.
+      let maxC = c;
+      while (maxC + 1 <= grid.cols && !occ[(r - 1) * grid.cols + maxC]) maxC += 1;
+      // For each candidate end-col, find how far down the rectangle stays empty.
+      for (let endC = c; endC <= maxC; endC += 1) {
+        let endR = r;
+        rowLoop: while (endR + 1 <= grid.rows) {
+          for (let cc = c; cc <= endC; cc += 1) {
+            if (occ[endR * grid.cols + (cc - 1)]) break rowLoop;
+          }
+          endR += 1;
+        }
+        const cs = endC - c + 1;
+        const rs = endR - r + 1;
+        const area = cs * rs;
+        if (area > bestArea) {
+          bestArea = area;
+          best = { c, r, cs, rs };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/** Snap every cell to a clean integer-track grid:
+ *
+ *  Strategy: zero each cell's per-cell pixel offsets so their on-screen rect
+ *  collapses back to the box defined by their grid coords + the current track
+ *  weights. After this every cell occupies an integer number of columns/rows
+ *  again, so vertical and horizontal borders align between rows.
+ *
+ *  Track weights (`colSizes`/`rowSizes`) are preserved — corner-drag
+ *  redistributions (which are still a clean "everything in this column is
+ *  this fraction wide") survive. Edge-drag tweaks, which can give different
+ *  rows different boundaries, are flattened.
+ *
+ *  After snapping we run the whitespace absorber repeatedly so empty
+ *  rectangles get swallowed by an adjacent cell. */
+export function alignGrid(
+  state: PhotoGridState,
+  padding: number,
+  gap: number,
+  designW: number,
+  designH: number,
+): PhotoGridState {
+  if (!state.cells.length) return state;
+  // 1. Zero every per-cell pixel offset. Each cell's rect now equals its
+  //    grid-track box; cells in the same column share a single x-boundary
+  //    and likewise for rows.
+  let cells: Cell[] = state.cells.map((c) => ({
+    ...c, dx: 0, dy: 0, dw: 0, dh: 0,
+  }));
+
+  // 2. Resolve overlaps that may have appeared because two cells'
+  //    pixel-offset rects had been carved up between them. Shrink the later
+  //    cell until it doesn't overlap; if it can't shrink further, drop it.
+  const placed: Cell[] = [];
+  for (const c of cells) {
+    let cur = c;
+    let safety = 8;
+    while (safety > 0 && placed.some((p) => rectsOverlap(p, cur))) {
+      safety -= 1;
+      if (cur.colSpan > 1) cur = { ...cur, colSpan: cur.colSpan - 1 };
+      else if (cur.rowSpan > 1) cur = { ...cur, rowSpan: cur.rowSpan - 1 };
+      else { cur = null as unknown as Cell; break; }
+    }
+    if (cur) placed.push(cur);
+  }
+  cells = placed;
+
+  let nextState: PhotoGridState = { ...state, cells };
+
+  // Whitespace absorber: for every empty rectangular region left in the grid,
+  // run compactAfterRemoval against a synthetic "removed" cell sized to that
+  // region so the existing strategies (drop tracks / expand neighbor / pixel
+  // offset) collapse it.
+  let absorberSafety = nextState.grid.cols * nextState.grid.rows + 4;
+  while (absorberSafety > 0) {
+    absorberSafety -= 1;
+    const empty = findMaxEmptyRect(nextState.cells, nextState.grid);
+    if (!empty) break;
+    // Build a phantom cell representing the empty rect so compactAfterRemoval
+    // can absorb it.
+    const phantom: Cell = {
+      ...blankCell(empty.c, empty.r),
+      colSpan: empty.cs,
+      rowSpan: empty.rs,
+    };
+    const result = compactAfterRemoval(
+      nextState.cells,
+      nextState.grid,
+      phantom,
+      padding,
+      gap,
+      designW,
+      designH,
+    );
+    if (
+      result.cells === nextState.cells &&
+      result.grid === nextState.grid
+    ) {
+      // No strategy applied; stop to avoid an infinite loop.
+      break;
+    }
+    nextState = { ...nextState, cells: result.cells, grid: result.grid };
+  }
+  return nextState;
 }
 
 function buildOccupancy(cells: Cell[], grid: GridConfig): boolean[] {
@@ -390,11 +687,8 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
           }
         }
       }
-      const selected = state.selectedCellId &&
-        cells.some((c) => c.id === state.selectedCellId)
-          ? state.selectedCellId
-          : null;
-      return { ...state, grid: next, cells, selectedCellId: selected };
+      const selectedCellIds = state.selectedCellIds.filter((id) => cells.some((c) => c.id === id));
+      return { ...state, grid: next, cells, selectedCellIds };
     }
     case 'APPLY_PRESET': {
       const p = action.preset;
@@ -411,7 +705,7 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         cellBorder: old[i]?.cellBorder ?? 0,
         cellBorderColor: old[i]?.cellBorderColor ?? '#ffffff',
       }));
-      return { ...state, grid: { cols: p.cols, rows: p.rows }, cells, selectedCellId: null };
+      return { ...state, grid: { cols: p.cols, rows: p.rows }, cells, selectedCellIds: [] };
     }
     case 'EDGE_RESIZE': {
       const map = new Map(action.updates.map((u) => [u.id, u]));
@@ -441,46 +735,60 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return { ...state, grid };
     }
     case 'ADD_CELL': {
-      const occ = buildOccupancy(state.cells, state.grid);
-      let placed: { c: number; r: number } | null = null;
-      for (let r = 1; r <= state.grid.rows && !placed; r++) {
-        for (let c = 1; c <= state.grid.cols && !placed; c++) {
-          if (!occ[(r - 1) * state.grid.cols + (c - 1)]) placed = { c, r };
-        }
+      // Find the LARGEST empty rectangle in the grid and place the new cell
+      // there at that size. If the grid is fully occupied, grow it by one
+      // track in the shorter axis (mirroring the previous fallback).
+      const max = findMaxEmptyRect(state.cells, state.grid);
+      if (max) {
+        const newCell = { ...blankCell(max.c, max.r), colSpan: max.cs, rowSpan: max.rs };
+        return {
+          ...state,
+          cells: [...state.cells, newCell],
+          selectedCellIds: [newCell.id],
+        };
       }
       const grid: GridConfig = { ...state.grid };
-      if (!placed) {
-        // Grid grew to accommodate the new cell. Extend the matching size
-        // array with the average existing weight so the new track lines up
-        // proportionally with the others (instead of snapping to 1fr and
-        // looking out of place when neighbors have been resized).
-        if (grid.cols <= grid.rows) {
-          const cw = trackSizes(grid.colSizes, grid.cols);
-          const avg = cw.length ? cw.reduce((a, b) => a + b, 0) / cw.length : 1;
-          grid.cols += 1;
-          grid.colSizes = [...cw, avg];
-          placed = { c: grid.cols, r: 1 };
-        } else {
-          const rh = trackSizes(grid.rowSizes, grid.rows);
-          const avg = rh.length ? rh.reduce((a, b) => a + b, 0) / rh.length : 1;
-          grid.rows += 1;
-          grid.rowSizes = [...rh, avg];
-          placed = { c: 1, r: grid.rows };
-        }
+      let placed: { c: number; r: number };
+      if (grid.cols <= grid.rows) {
+        const cw = trackSizes(grid.colSizes, grid.cols);
+        const avg = cw.length ? cw.reduce((a, b) => a + b, 0) / cw.length : 1;
+        grid.cols += 1;
+        grid.colSizes = [...cw, avg];
+        placed = { c: grid.cols, r: 1 };
+      } else {
+        const rh = trackSizes(grid.rowSizes, grid.rows);
+        const avg = rh.length ? rh.reduce((a, b) => a + b, 0) / rh.length : 1;
+        grid.rows += 1;
+        grid.rowSizes = [...rh, avg];
+        placed = { c: 1, r: grid.rows };
       }
       const newCell = blankCell(placed.c, placed.r);
-      return { ...state, grid, cells: [...state.cells, newCell], selectedCellId: newCell.id };
+      return {
+        ...state,
+        grid,
+        cells: [...state.cells, newCell],
+        selectedCellIds: [newCell.id],
+      };
     }
     case 'REMOVE_CELL': {
       const removed = state.cells.find((c) => c.id === action.id);
       if (!removed) return state;
       const remaining = state.cells.filter((c) => c.id !== action.id);
-      const compacted = compactAfterRemoval(remaining, state.grid, removed);
+      const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
+      const compacted = compactAfterRemoval(
+        remaining,
+        state.grid,
+        removed,
+        state.container.padding,
+        state.container.gap,
+        dims.w,
+        dims.h,
+      );
       return {
         ...state,
         cells: compacted.cells,
         grid: compacted.grid,
-        selectedCellId: state.selectedCellId === action.id ? null : state.selectedCellId,
+        selectedCellIds: state.selectedCellIds.filter((id) => id !== action.id),
       };
     }
     case 'UPDATE_CELL':
@@ -555,7 +863,57 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       };
     }
     case 'SELECT':
-      return { ...state, selectedCellId: action.id };
+      return { ...state, selectedCellIds: action.id ? [action.id] : [] };
+    case 'SELECT_TOGGLE': {
+      const have = state.selectedCellIds.includes(action.id);
+      const ids = have
+        ? state.selectedCellIds.filter((x) => x !== action.id)
+        : [...state.selectedCellIds, action.id];
+      return { ...state, selectedCellIds: ids };
+    }
+    case 'MERGE_CELLS': {
+      const ids = action.ids;
+      if (ids.length < 2) return state;
+      const targets = state.cells.filter((c) => ids.includes(c.id));
+      if (targets.length < 2) return state;
+      // First selected wins as the surviving cell.
+      const primary = state.cells.find((c) => c.id === ids[0]);
+      if (!primary) return state;
+      const cMin = Math.min(...targets.map((c) => c.colStart));
+      const rMin = Math.min(...targets.map((c) => c.rowStart));
+      const cMax = Math.max(...targets.map((c) => c.colStart + c.colSpan - 1));
+      const rMax = Math.max(...targets.map((c) => c.rowStart + c.rowSpan - 1));
+      const merged: Cell = {
+        ...primary,
+        colStart: cMin,
+        rowStart: rMin,
+        colSpan: cMax - cMin + 1,
+        rowSpan: rMax - rMin + 1,
+        // Wipe pixel offsets so the merged rect is a clean track-aligned box.
+        dx: 0, dy: 0, dw: 0, dh: 0,
+      };
+      const cells = state.cells
+        .filter((c) => !ids.includes(c.id))
+        .concat(merged);
+      return { ...state, cells, selectedCellIds: [merged.id] };
+    }
+    case 'MOVE_CELL_TO_RECT': {
+      const target = state.cells.find((c) => c.id === action.id);
+      if (!target) return state;
+      const { colStart, rowStart, colSpan, rowSpan } = action;
+      // Reject if the destination overlaps any other cell in grid coords.
+      const proposed: Cell = { ...target, colStart, rowStart, colSpan, rowSpan, dx: 0, dy: 0, dw: 0, dh: 0 };
+      const conflict = state.cells.some((c) => c.id !== target.id && rectsOverlap(c, proposed));
+      if (conflict) return state;
+      return {
+        ...state,
+        cells: state.cells.map((c) => (c.id === target.id ? proposed : c)),
+      };
+    }
+    case 'ALIGN_GRID': {
+      const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
+      return alignGrid(state, state.container.padding, state.container.gap, dims.w, dims.h);
+    }
     case 'SET_ZOOM':
       return { ...state, canvas: { ...state.canvas, zoom: action.zoom } };
     case 'FILL_FROM_FILES': {
