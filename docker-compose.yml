@@ -1,0 +1,55 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    image: photogrid-studio/backend:latest
+    container_name: photogrid-backend
+    restart: unless-stopped
+    environment:
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-60}
+      MAX_PIXELS_MP: ${MAX_PIXELS_MP:-200}
+      CACHE_TTL_HOURS: ${CACHE_TTL_HOURS:-24}
+      CACHE_SWEEP_MINUTES: ${CACHE_SWEEP_MINUTES:-15}
+      VIPS_THRESHOLD_MP: ${VIPS_THRESHOLD_MP:-40}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      CACHE_DIR: /var/cache/photogrid
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    volumes:
+      - photogrid-cache:/var/cache/photogrid
+    expose:
+      - "8000"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/healthz', timeout=2).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: /api
+    image: photogrid-studio/frontend:latest
+    container_name: photogrid-frontend
+    restart: unless-stopped
+    environment:
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-60}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  photogrid-cache:
+    name: photogrid-cache
