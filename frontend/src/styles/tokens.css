@@ -1,0 +1,82 @@
+/* Theme tokens — ported verbatim from the design prototype's styles.css. */
+
+:root,
+[data-theme='dark'] {
+  --bg: #0b0b0c;
+  --panel: #131314;
+  --panel-2: #181819;
+  --panel-3: #1f1f21;
+  --hover: #232325;
+  --line: #232326;
+  --line-strong: #34343a;
+  --text: #ededee;
+  --text-2: #a8a8ac;
+  --text-3: #6b6b70;
+  --text-4: #4a4a4e;
+  --accent: oklch(0.78 0.16 55);
+  --accent-2: oklch(0.72 0.16 55);
+  --accent-soft: oklch(0.78 0.16 55 / 0.14);
+  --danger: oklch(0.66 0.18 25);
+  --stage-bg: radial-gradient(circle at 50% 40%, #181818, #08080a 70%);
+  --cell-bg: #1a1a1c;
+  --cell-empty-a: #18181a;
+  --cell-empty-b: #1d1d20;
+  --board-shadow: drop-shadow(0 24px 48px rgba(0, 0, 0, 0.55));
+  --kbd-color: rgba(0, 0, 0, 0.55);
+  --primary-fg: #1a0f00;
+  --check-mark: #1a0f00;
+  --seg-active-bg: var(--panel-3);
+  --color-checker: #2a2a2a;
+  --drop-overlay-bg: rgba(0, 0, 0, 0.6);
+  --toast-bg: var(--panel-3);
+  --toast-fg: var(--text);
+  --toast-border: var(--line-strong);
+  --handle-border: var(--bg);
+  --cell-ctrl-bg: rgba(0, 0, 0, 0.55);
+  --cell-ctrl-bg-hover: rgba(0, 0, 0, 0.85);
+  --cell-ctrl-fg: var(--text);
+  --radius: 6px;
+  --radius-lg: 10px;
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.02), 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 1px 0 rgba(0, 0, 0, 0.02), 0 24px 60px rgba(0, 0, 0, 0.55);
+  --font: 'Geist', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+[data-theme='light'] {
+  --bg: #f4f4f5;
+  --panel: #ffffff;
+  --panel-2: #f7f7f8;
+  --panel-3: #eeeef0;
+  --hover: #ececee;
+  --line: #e7e7ea;
+  --line-strong: #cfcfd3;
+  --text: #0a0a0b;
+  --text-2: #4d4d54;
+  --text-3: #7a7a82;
+  --text-4: #b2b2b9;
+  --accent: oklch(0.62 0.18 50);
+  --accent-2: oklch(0.55 0.18 50);
+  --accent-soft: oklch(0.62 0.18 50 / 0.12);
+  --danger: oklch(0.58 0.20 25);
+  --stage-bg: radial-gradient(circle at 50% 35%, #fcfcfd, #e8e8eb 75%);
+  --cell-bg: #ececee;
+  --cell-empty-a: #efeff1;
+  --cell-empty-b: #e4e4e7;
+  --board-shadow: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.10)) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.05));
+  --kbd-color: rgba(255, 255, 255, 0.7);
+  --primary-fg: #ffffff;
+  --check-mark: #ffffff;
+  --seg-active-bg: #ffffff;
+  --color-checker: #d6d6d6;
+  --drop-overlay-bg: rgba(255, 255, 255, 0.7);
+  --toast-bg: var(--text);
+  --toast-fg: #ffffff;
+  --toast-border: transparent;
+  --handle-border: #ffffff;
+  --cell-ctrl-bg: rgba(255, 255, 255, 0.85);
+  --cell-ctrl-bg-hover: #ffffff;
+  --cell-ctrl-fg: var(--text);
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.02), 0 8px 24px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 1px 0 rgba(0, 0, 0, 0.02), 0 24px 60px rgba(0, 0, 0, 0.10);
+}
