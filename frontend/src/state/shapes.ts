@@ -31,19 +31,23 @@ export const SHAPES: Record<ShapeId, ShapeDef> = {
  * (it interacts oddly with the cell's overflow:hidden + box-shadow border), so
  * shapes that are pure border-radius use that and the rest fall back to
  * mask-image for crisp edges.
+ *
+ * `radiusPx` is an absolute pixel radius in design space (matches the value
+ * the user typed in the inspector). The backend is fed the same number so the
+ * exported corners line up exactly with the on-screen preview.
  */
-export function cellShapeCSS(shape: ShapeId, radiusPct: number): CSSProperties {
+export function cellShapeCSS(shape: ShapeId, radiusPx: number): CSSProperties {
   // For 'rounded' the radius slider drives it; for other shapes radius is ignored.
-  return shapeCSS(shape, 0, 0, radiusPct);
+  return shapeCSS(shape, 0, 0, radiusPx);
 }
 
-export function shapeCSS(shape: ShapeId, _w: number, _h: number, radiusPct: number): CSSProperties {
+export function shapeCSS(shape: ShapeId, _w: number, _h: number, radiusPx: number): CSSProperties {
   const out: CSSProperties = { clipPath: 'none', borderRadius: 0 };
   switch (shape) {
     case 'rect':
       out.borderRadius = 0; break;
     case 'rounded':
-      out.borderRadius = `${radiusPct}%`; break;
+      out.borderRadius = `${Math.max(0, radiusPx)}px`; break;
     case 'squircle':
       out.borderRadius = '32% / 32%'; break;
     case 'circle':

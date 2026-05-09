@@ -36,7 +36,7 @@ class Cell(BaseModel):
     rotation: float = 0
     filter: str = "none"
     shape: ShapeId = "rect"  # per-cell shape
-    cellRadius: float = 0  # 0..50 (%)
+    cellRadius: float = 0  # design-px corner radius (multiplied by output.scale on render)
     cellBorder: float = 0  # px
     cellBorderColor: str = "#ffffff"
     # Per-cell pixel offsets layered on top of the grid-computed box; used by
@@ -49,7 +49,7 @@ class Cell(BaseModel):
 
 class Container(BaseModel):
     shape: ShapeId = "rect"
-    cornerRadius: float = 12  # %
+    cornerRadius: float = 12  # design-px corner radius (multiplied by output.scale on render)
     aspect: str = "1:1"
     bg: str = "#ffffff"
     bgTransparent: bool = False

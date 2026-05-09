@@ -10,7 +10,7 @@ from photogrid.renderer.shapes import make_cell_mask, make_container_mask
     ["rect", "rounded", "squircle", "circle", "oval", "hexagon", "diamond", "arch", "blob", "heart"],
 )
 def test_container_mask_dims(shape: str) -> None:
-    mask = make_container_mask(shape, 200, 100, corner_pct=20)
+    mask = make_container_mask(shape, 200, 100, corner_px=20)
     assert mask.size == (200, 100)
     assert mask.mode == "L"
 

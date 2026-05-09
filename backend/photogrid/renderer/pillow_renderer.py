@@ -120,11 +120,14 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
         cw_i = max(1, int(round(box[2])))
         ch_i = max(1, int(round(box[3])))
         # Cell shape mask: prefer the per-cell shape; fall back to rounded-rect
-        # when shape is 'rect' but a corner radius is set.
+        # when shape is 'rect' but a corner radius is set. ``cell.cellRadius``
+        # is in design pixels — multiply by the output scale so the rendered
+        # corner radius equals what the on-screen preview shows.
+        cell_radius_out = cell.cellRadius * scale
         if cell.shape and cell.shape != "rect":
-            cell_mask = make_container_mask(cell.shape, cw_i, ch_i, cell.cellRadius)
+            cell_mask = make_container_mask(cell.shape, cw_i, ch_i, cell_radius_out)
         else:
-            cell_mask = make_cell_mask(cw_i, ch_i, cell.cellRadius)
+            cell_mask = make_cell_mask(cw_i, ch_i, cell_radius_out)
 
         src = _open_source(cell)
         if src is None:
@@ -139,20 +142,23 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             stroke_cell(
                 base,
                 box,
-                radius_pct=cell.cellRadius,
+                shape=cell.shape or "rect",
+                radius_px=cell_radius_out,
                 width=cell.cellBorder * scale,
                 color=cell.cellBorderColor,
             )
 
-    # Apply container shape mask globally.
-    container_mask = make_container_mask(cont.shape, W, H, cont.cornerRadius)
+    # Apply container shape mask globally. ``cont.cornerRadius`` is design px;
+    # the mask is built in output px so we scale up.
+    container_radius_out = cont.cornerRadius * scale
+    container_mask = make_container_mask(cont.shape, W, H, container_radius_out)
     base = _apply_alpha(base, container_mask)
 
     # Container border (drawn inset, inside the clip region).
     if cont.borderWidth > 0:
         stroke_container(
             base, cont.shape, W, H,
-            corner_pct=cont.cornerRadius,
+            corner_px=container_radius_out,
             width=cont.borderWidth * scale,
             color=cont.borderColor,
         )
