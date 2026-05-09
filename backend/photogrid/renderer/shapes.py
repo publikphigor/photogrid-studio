@@ -88,26 +88,37 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Ima
         draw.ellipse((aw * 0.40, 0, aw, ah * 0.85), fill=255)
         draw.ellipse((aw * 0.05, ah * 0.30, aw * 0.95, ah), fill=255)
     elif shape == "heart":
+        # Sample the exact cubic bezier path the frontend uses (`shapes.ts`,
+        # heart's mask SVG) so the silhouette matches pixel-for-pixel. Source
+        # path: M50,92 C18,74 4,46 18,24 C30,6 50,12 50,32 C50,12 70,6 82,24
+        # C96,46 82,74 50,92 Z, on a 100x100 viewBox scaled into (aw, ah).
+        beziers = [
+            ((50, 92), (18, 74), (4, 46), (18, 24)),
+            ((18, 24), (30, 6), (50, 12), (50, 32)),
+            ((50, 32), (50, 12), (70, 6), (82, 24)),
+            ((82, 24), (96, 46), (82, 74), (50, 92)),
+        ]
         sx, sy = aw / 100.0, ah / 100.0
-        cl = (int(25 * sx), int(32 * sy))
-        cr = (int(75 * sx), int(32 * sy))
-        radius = int(28 * min(sx, sy))
-        draw.ellipse(
-            (cl[0] - radius, cl[1] - radius, cl[0] + radius, cl[1] + radius),
-            fill=255,
-        )
-        draw.ellipse(
-            (cr[0] - radius, cr[1] - radius, cr[0] + radius, cr[1] + radius),
-            fill=255,
-        )
-        draw.polygon(
-            [
-                (int(2 * sx), int(42 * sy)),
-                (int(98 * sx), int(42 * sy)),
-                (int(50 * sx), int(95 * sy)),
-            ],
-            fill=255,
-        )
+        pts: list[tuple[float, float]] = []
+        steps = 64  # plenty of segments for a smooth silhouette at any scale
+        for p0, p1, p2, p3 in beziers:
+            for i in range(steps):
+                t = i / steps
+                u = 1 - t
+                bx = (
+                    u * u * u * p0[0]
+                    + 3 * u * u * t * p1[0]
+                    + 3 * u * t * t * p2[0]
+                    + t * t * t * p3[0]
+                )
+                by = (
+                    u * u * u * p0[1]
+                    + 3 * u * u * t * p1[1]
+                    + 3 * u * t * t * p2[1]
+                    + t * t * t * p3[1]
+                )
+                pts.append((bx * sx, by * sy))
+        draw.polygon(pts, fill=255)
     elif shape == "triangle":
         draw.polygon(
             [(aw * 0.5, 0), (aw, ah), (0, ah)],
