@@ -116,8 +116,9 @@ export async function writeBlobToFolder(
   handle: DirHandleLike,
   filename: string,
   blob: Blob,
-): Promise<void> {
-  const fileHandle = await handle.getFileHandle(filename, { create: true });
+): Promise<string> {
+  const finalName = await uniqueFilename(handle, filename);
+  const fileHandle = await handle.getFileHandle(finalName, { create: true });
   const writable = await (fileHandle as unknown as {
     createWritable: () => Promise<{
       write: (b: Blob) => Promise<void>;
@@ -126,4 +127,28 @@ export async function writeBlobToFolder(
   }).createWritable();
   await writable.write(blob);
   await writable.close();
+  return finalName;
+}
+
+/** If `filename` already exists in `handle`, return `name_1.ext`, `name_2.ext`, etc.
+ *  Walks the existing names by attempting `getFileHandle` without `create`. */
+async function uniqueFilename(handle: DirHandleLike, filename: string): Promise<string> {
+  if (!(await fileExists(handle, filename))) return filename;
+  const dot = filename.lastIndexOf('.');
+  const stem = dot > 0 ? filename.slice(0, dot) : filename;
+  const ext = dot > 0 ? filename.slice(dot) : '';
+  for (let i = 1; i < 1000; i += 1) {
+    const candidate = `${stem}_${i}${ext}`;
+    if (!(await fileExists(handle, candidate))) return candidate;
+  }
+  return `${stem}_${Date.now()}${ext}`;
+}
+
+async function fileExists(handle: DirHandleLike, name: string): Promise<boolean> {
+  try {
+    await handle.getFileHandle(name, { create: false });
+    return true;
+  } catch {
+    return false;
+  }
 }

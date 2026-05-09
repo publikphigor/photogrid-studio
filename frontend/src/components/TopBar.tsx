@@ -11,11 +11,13 @@ interface Props {
   onUploadAll: () => void;
   onExport: () => void;
   exporting: boolean;
+  uploading: boolean;
 }
 
 export function TopBar({
-  state, dispatch, history, theme, setTheme, onUploadAll, onExport, exporting,
+  state, dispatch, history, theme, setTheme, onUploadAll, onExport, exporting, uploading,
 }: Props) {
+  const busy = exporting || uploading;
   const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
   const outW = Math.round(dims.w * state.output.scale);
   const outH = Math.round(dims.h * state.output.scale);
@@ -98,10 +100,15 @@ export function TopBar({
         <b style={{ color: 'var(--text-2)', fontWeight: 500 }}>{formatBytes(est)}</b>
       </span>
       <span className="block w-px h-[22px]" style={{ background: 'var(--line)' }} />
-      <button className="btn" onClick={onUploadAll} title="Upload images">
-        <Upload size={14} /> Upload
+      <button
+        className="btn"
+        onClick={onUploadAll}
+        disabled={busy}
+        title={uploading ? 'Uploading…' : 'Upload images'}
+      >
+        <Upload size={14} /> {uploading ? 'Uploading…' : 'Upload'}
       </button>
-      <button className="btn primary" onClick={onExport} disabled={exporting} title="Export (⌘E)">
+      <button className="btn primary" onClick={onExport} disabled={busy} title="Export (⌘E)">
         <Download size={14} /> {exporting ? 'Exporting…' : 'Export'} <span className="kbd">⌘E</span>
       </button>
     </div>

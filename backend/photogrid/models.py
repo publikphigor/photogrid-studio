@@ -11,7 +11,7 @@ ShapeId = Literal[
     "parallelogram", "chevron",
 ]
 FitMode = Literal["native", "cover", "contain", "fill"]
-FormatId = Literal["png", "jpg", "webp"]
+FormatId = Literal["png", "jpg", "webp", "svg"]
 
 
 class CellImage(BaseModel):

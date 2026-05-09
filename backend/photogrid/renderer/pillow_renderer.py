@@ -25,7 +25,12 @@ except Exception:
     pass
 
 
-_FORMAT_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+_FORMAT_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "webp": "image/webp",
+    "svg": "image/svg+xml",
+}
 
 
 class PillowRenderer:
@@ -228,6 +233,26 @@ def _encode(img: Image.Image, fmt: str, quality: float) -> tuple[bytes, str]:
         img.save(buf, format="JPEG", quality=int(round(quality * 100)), optimize=True, progressive=True)
     elif fmt == "webp":
         img.save(buf, format="WEBP", quality=int(round(quality * 100)), method=6)
+    elif fmt == "svg":
+        # SVG carrying the rendered pixel canvas as a single embedded PNG.
+        # The whole composite (cell shapes, container mask, borders) is already
+        # baked into the alpha channel, so the SVG is a faithful single-image
+        # wrapper that opens in any vector tool but isn't true vector geometry.
+        import base64
+        png_buf = io.BytesIO()
+        img.save(png_buf, format="PNG", optimize=True)
+        b64 = base64.b64encode(png_buf.getvalue()).decode("ascii")
+        w, h = img.size
+        svg = (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+            f'width="{w}" height="{h}" viewBox="0 0 {w} {h}">\n'
+            f'  <image width="{w}" height="{h}" '
+            f'xlink:href="data:image/png;base64,{b64}"/>\n'
+            f"</svg>\n"
+        )
+        return svg.encode("utf-8"), _FORMAT_MIME[fmt]
     else:
         raise ValueError(f"unsupported format: {fmt}")
     return buf.getvalue(), _FORMAT_MIME[fmt]

@@ -17,6 +17,7 @@ export function App() {
   const [state, dispatch, history] = useHistoryReducer(reducer, defaultState());
   const [toast, setToast] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [exportInfo, setExportInfo] = useState<{
     lastSize?: number;
     rendererName?: string;
@@ -53,13 +54,15 @@ export function App() {
           throw new Error(`Could not re-upload: ${stillMissing.join(', ')}`);
         }
       });
-      await saveBlob(res.blob, res.filename, state.output.format, flashToast);
+      const savedAs = await saveBlob(res.blob, res.filename, state.output.format, flashToast);
       setExportInfo({
         lastSize: res.size,
         rendererName: res.rendererName,
         elapsedMs: res.elapsedMs,
       });
-      flashToast(`Saved · ${formatBytes(res.size)}`);
+      const renameNote =
+        savedAs && savedAs !== res.filename ? ` · saved as ${savedAs}` : '';
+      flashToast(`Saved · ${formatBytes(res.size)}${renameNote}`);
     } catch (e) {
       console.error(e);
       flashToast('Export failed');
@@ -81,15 +84,20 @@ export function App() {
     input.onchange = async () => {
       const files = [...(input.files ?? [])];
       if (!files.length) return;
-      const imgs: CellImageRef[] = [];
-      for (const f of files) {
-        try {
-          imgs.push(await ingestFile(f));
-        } catch (e) {
-          console.error('upload failed', f.name, e);
+      setUploading(true);
+      try {
+        const imgs: CellImageRef[] = [];
+        for (const f of files) {
+          try {
+            imgs.push(await ingestFile(f));
+          } catch (e) {
+            console.error('upload failed', f.name, e);
+          }
         }
+        if (imgs.length) dispatch({ type: 'FILL_FROM_FILES', images: imgs });
+      } finally {
+        setUploading(false);
       }
-      if (imgs.length) dispatch({ type: 'FILL_FROM_FILES', images: imgs });
     };
     input.click();
   }, [dispatch]);
@@ -144,6 +152,7 @@ export function App() {
         onUploadAll={handleUploadAll}
         onExport={handleExport}
         exporting={exporting}
+        uploading={uploading}
       />
       <div
         className="grid h-[calc(100vh-48px)] min-h-0"
@@ -162,6 +171,7 @@ const FORMAT_MIMES: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
   webp: 'image/webp',
+  svg: 'image/svg+xml',
 };
 
 /** Save a blob, preferring the user's persisted export folder, then OS save dialog,
@@ -172,14 +182,13 @@ async function saveBlob(
   filename: string,
   format: string,
   notify: (msg: string) => void,
-): Promise<void> {
+): Promise<string | undefined> {
   // 1. Persisted folder (FSA Directory)
   const folder = await getStoredFolder();
   if (folder) {
     const granted = await ensureWritable(folder);
     if (granted) {
-      await writeBlobToFolder(folder, filename, blob);
-      return;
+      return await writeBlobToFolder(folder, filename, blob);
     }
     notify('Folder permission denied; falling back to save dialog');
   }

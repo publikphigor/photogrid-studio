@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Save, Trash2 } from 'lucide-react';
+import { Plus, Save, Shuffle, Trash2 } from 'lucide-react';
 import type { Action, CellImageRef, PhotoGridState } from '@/types';
 import { LAYOUT_PRESETS } from '@/state/presets';
 import { Templates, type SavedTemplate } from '@/state/templates';
@@ -13,6 +13,13 @@ interface Props {
 
 export function LeftPanel({ state, dispatch }: Props) {
   const [saved, setSaved] = useState<SavedTemplate[]>([]);
+  const [randRaw, setRandRaw] = useState('5');
+  const [squaresOnly, setSquaresOnly] = useState(false);
+  const randCount = (() => {
+    const n = Number.parseInt(randRaw, 10);
+    if (!Number.isFinite(n)) return 1;
+    return Math.max(1, Math.min(200, n));
+  })();
 
   useEffect(() => {
     setSaved(Templates.list());
@@ -79,6 +86,47 @@ export function LeftPanel({ state, dispatch }: Props) {
               <span className="label">{p.name}</span>
             </button>
           ))}
+        </div>
+
+        <div className="pane-header">Random</div>
+        <div className="px-3 py-2 pb-3.5 flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <input
+              className="num-input"
+              type="text"
+              inputMode="decimal"
+              pattern="[0-9,.]*"
+              value={randRaw}
+              onChange={(e) => setRandRaw(e.target.value.replace(/[^0-9]/g, ''))}
+              style={{ width: 52 }}
+              title="Number of cells (1-200)"
+            />
+            <button
+              className="btn"
+              style={{ flex: 1 }}
+              onClick={() =>
+                dispatch({
+                  type: 'GENERATE_RANDOM_LAYOUT',
+                  cellCount: randCount,
+                  squaresOnly,
+                })
+              }
+              title="Generate a random layout with this many cells"
+            >
+              <Shuffle size={14} /> Generate layout
+            </button>
+          </div>
+          <label
+            className="flex items-center gap-2"
+            style={{ fontSize: 11.5, color: 'var(--text-2)', cursor: 'pointer' }}
+          >
+            <input
+              type="checkbox"
+              checked={squaresOnly}
+              onChange={(e) => setSquaresOnly(e.target.checked)}
+            />
+            Squares only (rect cells, no shape variety)
+          </label>
         </div>
 
         <div className="pane-header">

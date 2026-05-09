@@ -17,7 +17,7 @@ export type ShapeId =
   | 'chevron';
 
 export type FitMode = 'native' | 'cover' | 'contain' | 'fill';
-export type FormatId = 'png' | 'jpg' | 'webp';
+export type FormatId = 'png' | 'jpg' | 'webp' | 'svg';
 
 export interface CellImageRef {
   hash: string;
@@ -142,6 +142,12 @@ export type Action =
   | { type: 'SYNC_CELLS_SHAPE'; ids: string[] }
   | { type: 'SPLIT_CELL'; id: string; axis: 'row' | 'col'; count: number }
   | { type: 'ALIGN_GRID' }
+  | {
+      type: 'GENERATE_RANDOM_LAYOUT';
+      cellCount: number;
+      squaresOnly?: boolean;
+      seed?: number;
+    }
   | { type: 'SET_ZOOM'; zoom: number }
   | { type: 'FILL_FROM_FILES'; images: CellImageRef[] }
   | { type: 'FILL_EMPTY_NO_GROW'; images: CellImageRef[] }

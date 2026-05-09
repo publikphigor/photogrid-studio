@@ -1,8 +1,17 @@
-import type { Action, Cell, GridConfig, PhotoGridState } from '@/types';
-import { LAYOUT_PRESETS, dimensionsFor } from './presets';
+import type { Action, Cell, GridConfig, PhotoGridState, ShapeId } from '@/types';
+import { ASPECT_RATIOS, LAYOUT_PRESETS, dimensionsFor } from './presets';
 
 let _id = 0;
 export const uid = (p = 'c'): string => `${p}_${(++_id).toString(36)}`;
+
+/** Short, session-unique export filename — e.g. PG_l3k7q. The base36 timestamp
+ *  changes every second, which is short enough to read at a glance and unique
+ *  enough that the same session won't generate collisions in normal use.
+ *  Calling sites should regenerate this on RESET / REPLACE so each new
+ *  session/template starts with its own name. */
+export function generateFilename(): string {
+  return `PG_${Math.floor(Date.now() / 1000).toString(36)}`;
+}
 
 const blankCell = (col: number, row: number): Cell => ({
   id: uid(),
@@ -50,7 +59,7 @@ export function defaultState(): PhotoGridState {
       rowSpan: c.rs ?? 1,
     })),
     selectedCellIds: [],
-    output: { format: 'png', quality: 0.92, scale: 2, baseSize: 1200, filename: 'photogrid' },
+    output: { format: 'png', quality: 0.92, scale: 2, baseSize: 1200, filename: generateFilename() },
     canvas: { zoom: 1 },
   };
 }
@@ -645,6 +654,237 @@ export function alignGrid(
   return nextState;
 }
 
+/** A "mood" is a creative parameter bundle that the random-layout generator
+ *  picks from. Each one gives the canvas a recognizable feel (matted print,
+ *  bento board, geometric collage, …) so re-clicking "Generate" actually
+ *  produces visibly different results instead of one-style-with-jitter.
+ *
+ *  - `containerShapes` / `aspects`: the outer canvas variations.
+ *  - `cellShapes`: the per-cell shape pool; a uniform random pick per cell.
+ *  - `gap` / `padding`: a `[min, max]` pixel range that's later jittered.
+ *  - `cellRadiusRange` / `containerRadiusRange`: percentage ranges for the
+ *    rounded variants. */
+interface RandomMood {
+  containerShapes: ShapeId[];
+  aspects: string[];
+  cellShapes: ShapeId[];
+  gap: [number, number];
+  padding: [number, number];
+  cellRadiusRange: [number, number];
+  containerRadiusRange: [number, number];
+}
+
+const ALL_ASPECTS = ASPECT_RATIOS.map((a) => a.id);
+const RECT_FAMILY: ShapeId[] = ['rect'];
+const ORGANIC_FAMILY: ShapeId[] = ['circle', 'oval', 'heart', 'blob', 'arch'];
+const GEOMETRIC_FAMILY: ShapeId[] = [
+  'hexagon',
+  'diamond',
+  'pentagon',
+  'octagon',
+  'triangle',
+];
+const ALL_SHAPES: ShapeId[] = [
+  'rect',
+  'rounded',
+  'squircle',
+  'circle',
+  'oval',
+  'hexagon',
+  'diamond',
+  'arch',
+  'blob',
+  'heart',
+  'triangle',
+  'pentagon',
+  'octagon',
+  'star',
+  'parallelogram',
+  'chevron',
+];
+
+const MOODS: RandomMood[] = [
+  // "Bento": rounded rects with breathing room.
+  {
+    containerShapes: ['rect', 'rounded'],
+    aspects: ['1:1', '4:5', '4:3'],
+    cellShapes: ['rect', 'rounded', 'squircle'],
+    gap: [12, 24],
+    padding: [16, 32],
+    cellRadiusRange: [12, 30],
+    containerRadiusRange: [8, 24],
+  },
+  // "Mosaic": tightly packed rects.
+  {
+    containerShapes: ['rect'],
+    aspects: ['1:1', '16:9', '4:3', '3:4'],
+    cellShapes: RECT_FAMILY,
+    gap: [2, 8],
+    padding: [4, 16],
+    cellRadiusRange: [0, 0],
+    containerRadiusRange: [0, 8],
+  },
+  // "Matted": maximum padding, zero gap (the example screenshot).
+  {
+    containerShapes: ['rect'],
+    aspects: ['1:1', '4:5', '3:4'],
+    cellShapes: RECT_FAMILY,
+    gap: [0, 0],
+    padding: [64, 110],
+    cellRadiusRange: [0, 0],
+    containerRadiusRange: [0, 0],
+  },
+  // "Polaroid": squares with a generous mat and tiny gap.
+  {
+    containerShapes: ['rect', 'rounded'],
+    aspects: ['1:1'],
+    cellShapes: ['rect', 'rounded'],
+    gap: [4, 10],
+    padding: [40, 80],
+    cellRadiusRange: [0, 8],
+    containerRadiusRange: [0, 12],
+  },
+  // "Garden": soft organic shapes with breathing room.
+  {
+    containerShapes: ['rect', 'rounded', 'squircle'],
+    aspects: ['1:1', '4:5', '3:4'],
+    cellShapes: ORGANIC_FAMILY,
+    gap: [16, 32],
+    padding: [24, 56],
+    cellRadiusRange: [0, 0],
+    containerRadiusRange: [4, 24],
+  },
+  // "Geometric": angular polygons, medium gap.
+  {
+    containerShapes: ['rect', 'rounded', 'hexagon'],
+    aspects: ['1:1', '4:3', '3:4'],
+    cellShapes: GEOMETRIC_FAMILY,
+    gap: [8, 20],
+    padding: [16, 40],
+    cellRadiusRange: [0, 0],
+    containerRadiusRange: [0, 16],
+  },
+  // "Mixed media": every shape, looser gaps — chaotic but interesting.
+  {
+    containerShapes: ['rect', 'rounded', 'oval', 'arch'],
+    aspects: ALL_ASPECTS,
+    cellShapes: ALL_SHAPES,
+    gap: [8, 28],
+    padding: [16, 48],
+    cellRadiusRange: [0, 24],
+    containerRadiusRange: [0, 24],
+  },
+  // "Minimal": flat rects, no padding, hairline gap.
+  {
+    containerShapes: ['rect'],
+    aspects: ['1:1', '16:9'],
+    cellShapes: RECT_FAMILY,
+    gap: [0, 4],
+    padding: [0, 8],
+    cellRadiusRange: [0, 0],
+    containerRadiusRange: [0, 0],
+  },
+  // "Soft": squircles + circles, generous padding.
+  {
+    containerShapes: ['rounded', 'squircle'],
+    aspects: ['1:1', '4:5'],
+    cellShapes: ['squircle', 'rounded', 'circle'],
+    gap: [12, 24],
+    padding: [24, 48],
+    cellRadiusRange: [16, 36],
+    containerRadiusRange: [12, 24],
+  },
+];
+
+/** When `squaresOnly` is true, callers ignore most of the mood and force
+ *  rect cells / rect container — but we still need a gap/padding range, so we
+ *  return a deterministic "Polaroid"-flavoured mood. */
+function pickMood(squaresOnly: boolean): RandomMood {
+  if (squaresOnly) {
+    return {
+      containerShapes: RECT_FAMILY,
+      aspects: ['1:1'],
+      cellShapes: RECT_FAMILY,
+      gap: [4, 16],
+      padding: [8, 32],
+      cellRadiusRange: [0, 0],
+      containerRadiusRange: [0, 0],
+    };
+  }
+  return MOODS[Math.floor(Math.random() * MOODS.length)];
+}
+
+function pickFromArray<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Pick a random integer in `[lo, hi]` inclusive. */
+function jitterInt(range: [number, number]): number {
+  const [lo, hi] = range;
+  return Math.round(lo + Math.random() * (hi - lo));
+}
+
+/** Recursive Mondrian-style subdivision. Starts with a single 1×1 rect, then
+ *  repeatedly splits the largest rect (horizontally or vertically along the
+ *  longer axis with a 30–70 % ratio) until N rects exist. Distinct x/y edges
+ *  become the grid's column/row boundaries; each rect's grid coordinates are
+ *  derived from those edges. Track sizes (`colSizes`/`rowSizes`) carry the
+ *  split ratios so the rendered layout matches the geometric subdivision —
+ *  every row and column is occupied by at least one cell, so there's no empty
+ *  whitespace anywhere. */
+export function generateRandomLayout(cellCount: number): {
+  cols: number;
+  rows: number;
+  colSizes: number[];
+  rowSizes: number[];
+  cells: { c: number; r: number; cs: number; rs: number }[];
+} {
+  const N = Math.max(1, Math.min(24, Math.floor(cellCount) || 1));
+  type R = { x: number; y: number; w: number; h: number };
+  const rects: R[] = [{ x: 0, y: 0, w: 1, h: 1 }];
+  while (rects.length < N) {
+    rects.sort((a, b) => b.w * b.h - a.w * a.h);
+    const r = rects.shift()!;
+    const splitVertical = r.w >= r.h ? Math.random() < 0.85 : Math.random() < 0.15;
+    const t = 0.3 + Math.random() * 0.4; // 30–70 %
+    if (splitVertical) {
+      rects.push({ x: r.x, y: r.y, w: r.w * t, h: r.h });
+      rects.push({ x: r.x + r.w * t, y: r.y, w: r.w * (1 - t), h: r.h });
+    } else {
+      rects.push({ x: r.x, y: r.y, w: r.w, h: r.h * t });
+      rects.push({ x: r.x, y: r.y + r.h * t, w: r.w, h: r.h * (1 - t) });
+    }
+  }
+  const EPS = 1e-6;
+  const dedupe = (arr: number[]): number[] => {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const out: number[] = [];
+    for (const v of sorted) {
+      if (out.length === 0 || Math.abs(out[out.length - 1] - v) > EPS) out.push(v);
+    }
+    return out;
+  };
+  const xs = dedupe(rects.flatMap((r) => [r.x, r.x + r.w]));
+  const ys = dedupe(rects.flatMap((r) => [r.y, r.y + r.h]));
+  const idxOf = (arr: number[], v: number): number => {
+    for (let i = 0; i < arr.length; i += 1) {
+      if (Math.abs(arr[i] - v) < EPS) return i;
+    }
+    return -1;
+  };
+  const cols = xs.length - 1;
+  const rows = ys.length - 1;
+  const colSizes = xs.slice(1).map((v, i) => v - xs[i]);
+  const rowSizes = ys.slice(1).map((v, i) => v - ys[i]);
+  const cells = rects.map((r) => {
+    const c0 = idxOf(xs, r.x);
+    const c1 = idxOf(xs, r.x + r.w);
+    const r0 = idxOf(ys, r.y);
+    const r1 = idxOf(ys, r.y + r.h);
+    return { c: c0 + 1, r: r0 + 1, cs: Math.max(1, c1 - c0), rs: Math.max(1, r1 - r0) };
+  });
+  return { cols, rows, colSizes, rowSizes, cells };
+}
 
 function buildOccupancy(cells: Cell[], grid: GridConfig): boolean[] {
   const arr = new Array<boolean>(grid.cols * grid.rows).fill(false);
@@ -663,7 +903,13 @@ function buildOccupancy(cells: Cell[], grid: GridConfig): boolean[] {
 export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
   switch (action.type) {
     case 'REPLACE':
-      return action.state;
+      // A fresh session/template should get a fresh filename so users don't
+      // accidentally save over the last export. The incoming snapshot's
+      // `filename` is preserved only if it was non-default.
+      return {
+        ...action.state,
+        output: { ...action.state.output, filename: generateFilename() },
+      };
     case 'SET_CONTAINER':
       return { ...state, container: { ...state.container, ...action.patch } };
     case 'SET_OUTPUT':
@@ -1029,6 +1275,43 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return {
         ...state,
         cells: state.cells.map((c) => (c.id === target.id ? proposed : c)),
+      };
+    }
+    case 'GENERATE_RANDOM_LAYOUT': {
+      const layout = generateRandomLayout(action.cellCount);
+      const mood = pickMood(action.squaresOnly === true);
+      const cells: Cell[] = layout.cells.map((c) => ({
+        ...blankCell(c.c, c.r),
+        colSpan: c.cs,
+        rowSpan: c.rs,
+        shape: action.squaresOnly ? 'rect' : pickFromArray(mood.cellShapes),
+        cellRadius: action.squaresOnly
+          ? 0
+          : mood.cellRadiusRange[0] +
+            Math.random() * (mood.cellRadiusRange[1] - mood.cellRadiusRange[0]),
+      }));
+      return {
+        ...state,
+        container: {
+          ...state.container,
+          shape: action.squaresOnly ? 'rect' : pickFromArray(mood.containerShapes),
+          aspect: action.squaresOnly ? '1:1' : pickFromArray(mood.aspects),
+          gap: jitterInt(mood.gap),
+          padding: jitterInt(mood.padding),
+          cornerRadius: action.squaresOnly
+            ? 0
+            : mood.containerRadiusRange[0] +
+              Math.random() *
+                (mood.containerRadiusRange[1] - mood.containerRadiusRange[0]),
+        },
+        grid: {
+          cols: layout.cols,
+          rows: layout.rows,
+          colSizes: layout.colSizes,
+          rowSizes: layout.rowSizes,
+        },
+        cells,
+        selectedCellIds: [],
       };
     }
     case 'ALIGN_GRID': {

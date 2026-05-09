@@ -39,7 +39,7 @@ export function OutputTab({ state, dispatch, exportInfo }: Props) {
               value={o.filename}
               spellCheck={false}
               onChange={(e) => set({ filename: e.target.value.replace(/[/\\:*?"<>|]/g, '') })}
-              placeholder="photogrid"
+              placeholder="PG_xxxxx"
             />
             <span style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 11 }}>
               .{o.format}
@@ -56,6 +56,7 @@ export function OutputTab({ state, dispatch, exportInfo }: Props) {
             { value: 'png' as FormatId, label: 'PNG' },
             { value: 'jpg' as FormatId, label: 'JPG' },
             { value: 'webp' as FormatId, label: 'WEBP' },
+            { value: 'svg' as FormatId, label: 'SVG' },
           ]}
           value={o.format}
           onChange={(v) => set({ format: v })}
@@ -64,6 +65,7 @@ export function OutputTab({ state, dispatch, exportInfo }: Props) {
           {o.format === 'png' && 'Lossless · supports transparency · larger files'}
           {o.format === 'jpg' && 'Lossy · smaller · best for photos · no transparency'}
           {o.format === 'webp' && 'Modern · ~30% smaller than JPG · supports transparency'}
+          {o.format === 'svg' && 'SVG wrapper around the rendered PNG · scales without re-render'}
         </p>
       </div>
 
