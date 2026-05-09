@@ -645,6 +645,7 @@ export function alignGrid(
   return nextState;
 }
 
+
 function buildOccupancy(cells: Cell[], grid: GridConfig): boolean[] {
   const arr = new Array<boolean>(grid.cols * grid.rows).fill(false);
   for (const c of cells) {
@@ -896,6 +897,126 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         .filter((c) => !ids.includes(c.id))
         .concat(merged);
       return { ...state, cells, selectedCellIds: [merged.id] };
+    }
+    case 'SYNC_CELLS_SHAPE': {
+      const ids = action.ids;
+      if (ids.length < 2) return state;
+      const primary = state.cells.find((c) => c.id === ids[0]);
+      if (!primary) return state;
+      // Copy the primary's shape (and its companion radius / border) onto every
+      // selected cell so the visual silhouette becomes consistent. Image and
+      // position are untouched.
+      const targets = new Set(ids);
+      return {
+        ...state,
+        cells: state.cells.map((c) =>
+          targets.has(c.id) && c.id !== primary.id
+            ? {
+                ...c,
+                shape: primary.shape,
+                cellRadius: primary.cellRadius,
+              }
+            : c,
+        ),
+      };
+    }
+    case 'SPLIT_CELL': {
+      const target = state.cells.find((c) => c.id === action.id);
+      if (!target) return state;
+      const N = Math.max(2, Math.min(8, Math.floor(action.count)));
+      if (!Number.isFinite(N) || N < 2) return state;
+      const isRow = action.axis === 'row';
+      const R = isRow ? target.rowStart : target.colStart;
+      const S = isRow ? target.rowSpan : target.colSpan;
+      const inserted = N - 1;
+
+      // Insert (N-1) new tracks at the END of the target's band so all cells
+      // above the band stay anchored, cells fully below shift, and cells that
+      // cross the band stretch by the inserted count.
+      const insertAfter = R + S - 1; // last track index covered by target
+
+      const otherCells: Cell[] = [];
+      for (const c of state.cells) {
+        if (c.id === target.id) continue;
+        if (isRow) {
+          if (c.rowStart > insertAfter) {
+            otherCells.push({ ...c, rowStart: c.rowStart + inserted });
+          } else if (c.rowStart + c.rowSpan - 1 >= R) {
+            otherCells.push({ ...c, rowSpan: c.rowSpan + inserted });
+          } else {
+            otherCells.push(c);
+          }
+        } else {
+          if (c.colStart > insertAfter) {
+            otherCells.push({ ...c, colStart: c.colStart + inserted });
+          } else if (c.colStart + c.colSpan - 1 >= R) {
+            otherCells.push({ ...c, colSpan: c.colSpan + inserted });
+          } else {
+            otherCells.push(c);
+          }
+        }
+      }
+
+      // Replace target with N sub-cells, splitting the (S + inserted) tracks
+      // evenly across N children. Image (if any) is duplicated into each.
+      const totalSpan = S + inserted; // = S + N - 1
+      const baseSpan = Math.floor(totalSpan / N);
+      const rem = totalSpan % N;
+      let cursor = R;
+      const subs: Cell[] = [];
+      for (let i = 0; i < N; i += 1) {
+        const span = baseSpan + (i < rem ? 1 : 0);
+        const sub: Cell = {
+          ...target,
+          id: i === 0 ? target.id : uid(),
+          rowStart: isRow ? cursor : target.rowStart,
+          colStart: isRow ? target.colStart : cursor,
+          rowSpan: isRow ? span : target.rowSpan,
+          colSpan: isRow ? target.colSpan : span,
+          // Pixel offsets don't make sense across new tracks; reset.
+          dx: 0,
+          dy: 0,
+          dw: 0,
+          dh: 0,
+        };
+        subs.push(sub);
+        cursor += span;
+      }
+
+      // Update grid track sizes: replace the target's S original entries with
+      // (S + inserted) entries, all sharing the band's original total weight
+      // so other tracks' weights — and visual sizes — don't change.
+      const nextGrid: GridConfig = { ...state.grid };
+      if (isRow) {
+        nextGrid.rows = state.grid.rows + inserted;
+        const rowH = trackSizes(state.grid.rowSizes, state.grid.rows);
+        const bandWeight = rowH.slice(R - 1, R - 1 + S).reduce((a, b) => a + b, 0) || S;
+        const eachWeight = bandWeight / totalSpan;
+        const replacement = new Array<number>(totalSpan).fill(eachWeight);
+        nextGrid.rowSizes = [
+          ...rowH.slice(0, R - 1),
+          ...replacement,
+          ...rowH.slice(R - 1 + S),
+        ];
+      } else {
+        nextGrid.cols = state.grid.cols + inserted;
+        const colW = trackSizes(state.grid.colSizes, state.grid.cols);
+        const bandWeight = colW.slice(R - 1, R - 1 + S).reduce((a, b) => a + b, 0) || S;
+        const eachWeight = bandWeight / totalSpan;
+        const replacement = new Array<number>(totalSpan).fill(eachWeight);
+        nextGrid.colSizes = [
+          ...colW.slice(0, R - 1),
+          ...replacement,
+          ...colW.slice(R - 1 + S),
+        ];
+      }
+
+      return {
+        ...state,
+        grid: nextGrid,
+        cells: [...otherCells, ...subs],
+        selectedCellIds: [subs[0].id],
+      };
     }
     case 'MOVE_CELL_TO_RECT': {
       const target = state.cells.find((c) => c.id === action.id);

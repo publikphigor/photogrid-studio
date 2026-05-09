@@ -99,6 +99,74 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_pct: float) -> Im
             ],
             fill=255,
         )
+    elif shape == "triangle":
+        draw.polygon(
+            [(aw * 0.5, 0), (aw, ah), (0, ah)],
+            fill=255,
+        )
+    elif shape == "pentagon":
+        draw.polygon(
+            [
+                (aw * 0.5, 0),
+                (aw, ah * 0.38),
+                (aw * 0.82, ah),
+                (aw * 0.18, ah),
+                (0, ah * 0.38),
+            ],
+            fill=255,
+        )
+    elif shape == "octagon":
+        draw.polygon(
+            [
+                (aw * 0.30, 0),
+                (aw * 0.70, 0),
+                (aw, ah * 0.30),
+                (aw, ah * 0.70),
+                (aw * 0.70, ah),
+                (aw * 0.30, ah),
+                (0, ah * 0.70),
+                (0, ah * 0.30),
+            ],
+            fill=255,
+        )
+    elif shape == "star":
+        draw.polygon(
+            [
+                (aw * 0.50, 0),
+                (aw * 0.61, ah * 0.35),
+                (aw * 0.98, ah * 0.35),
+                (aw * 0.68, ah * 0.57),
+                (aw * 0.79, ah * 0.91),
+                (aw * 0.50, ah * 0.70),
+                (aw * 0.21, ah * 0.91),
+                (aw * 0.32, ah * 0.57),
+                (aw * 0.02, ah * 0.35),
+                (aw * 0.39, ah * 0.35),
+            ],
+            fill=255,
+        )
+    elif shape == "parallelogram":
+        draw.polygon(
+            [
+                (aw * 0.20, 0),
+                (aw, 0),
+                (aw * 0.80, ah),
+                (0, ah),
+            ],
+            fill=255,
+        )
+    elif shape == "chevron":
+        draw.polygon(
+            [
+                (0, 0),
+                (aw * 0.75, 0),
+                (aw, ah * 0.50),
+                (aw * 0.75, ah),
+                (0, ah),
+                (aw * 0.25, ah * 0.50),
+            ],
+            fill=255,
+        )
     else:
         draw.rectangle((0, 0, aw, ah), fill=255)
 

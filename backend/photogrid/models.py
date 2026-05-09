@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 ShapeId = Literal[
     "rect", "rounded", "squircle", "circle", "oval",
     "hexagon", "diamond", "arch", "blob", "heart",
+    "triangle", "pentagon", "octagon", "star",
+    "parallelogram", "chevron",
 ]
 FitMode = Literal["native", "cover", "contain", "fill"]
 FormatId = Literal["png", "jpg", "webp"]

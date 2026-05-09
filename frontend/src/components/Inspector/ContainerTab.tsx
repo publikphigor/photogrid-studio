@@ -25,6 +25,23 @@ export function ContainerTab({ state, dispatch }: Props) {
   const set = (patch: Partial<Container>) => dispatch({ type: 'SET_CONTAINER', patch });
   const setGrid = (patch: Partial<GridConfig>) => dispatch({ type: 'SET_GRID', patch });
 
+  const pickBgImage = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      try {
+        const img = await ingestFile(f);
+        set({ bgImage: img });
+      } catch (e) {
+        console.error('bg upload failed', e);
+      }
+    };
+    input.click();
+  };
+
   return (
     <>
       <div className="section">
@@ -119,22 +136,37 @@ export function ContainerTab({ state, dispatch }: Props) {
           <label>Image</label>
           {c.bgImage ? (
             <div className="flex items-center gap-2">
-              <span
+              <button
                 className="field"
+                onClick={pickBgImage}
+                title="Click to replace"
                 style={{
                   flex: 1,
                   minWidth: 0,
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  cursor: 'pointer',
+                  textAlign: 'left',
                 }}
-                title={c.bgImage.name}
               >
-                <ImageIcon size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                {c.bgImage.previewUrl && (
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: 3,
+                      backgroundImage: `url(${c.bgImage.previewUrl})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      flexShrink: 0,
+                      boxShadow: 'inset 0 0 0 1px var(--line)',
+                    }}
+                  />
+                )}
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {c.bgImage.name}
                 </span>
-              </span>
+              </button>
               <button
                 className="btn ghost"
                 style={{ height: 28, padding: '0 8px' }}
@@ -145,26 +177,7 @@ export function ContainerTab({ state, dispatch }: Props) {
               </button>
             </div>
           ) : (
-            <button
-              className="btn"
-              style={{ width: '100%' }}
-              onClick={() => {
-                const input = document.createElement('input');
-                input.type = 'file';
-                input.accept = 'image/*';
-                input.onchange = async () => {
-                  const f = input.files?.[0];
-                  if (!f) return;
-                  try {
-                    const img = await ingestFile(f);
-                    set({ bgImage: img });
-                  } catch (e) {
-                    console.error('bg upload failed', e);
-                  }
-                };
-                input.click();
-              }}
-            >
+            <button className="btn" style={{ width: '100%' }} onClick={pickBgImage}>
               <ImageIcon size={14} /> Upload image…
             </button>
           )}

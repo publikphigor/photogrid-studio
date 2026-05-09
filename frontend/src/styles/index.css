@@ -103,6 +103,14 @@
     background: var(--hover);
     border-color: var(--line-strong);
   }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .btn:disabled:hover {
+    background: var(--panel);
+    border-color: var(--line);
+  }
   .btn.primary {
     background: var(--accent);
     color: var(--primary-fg);
@@ -493,16 +501,23 @@
     outline: 1px solid transparent;
     outline-offset: -1px;
   }
+  /* Single-select (inspector target): solid, 3 px, themed contrast colour.
+   * Multi-select (any cell with .selected, including the primary): bumped to
+   * 4 px so multi-selection is clearly visible at a glance. Secondary cells
+   * (non-primary) keep a slightly softer dashed style so the primary still
+   * reads as the inspector's source of truth. */
   .cell.selected {
-    outline: 2px solid var(--accent);
-    outline-offset: -1px;
+    outline: 3px solid var(--focus);
+    outline-offset: -2px;
     z-index: 3;
   }
-  /* Multi-select: secondary cells get a softer outline so the user sees the
-   * primary (which the inspector reads) as the brighter one. */
-  .cell.selected:not(.primary) {
+  .cell.multi-selected.selected {
+    outline-width: 4px;
+    outline-offset: -3px;
+  }
+  .cell.multi-selected.selected:not(.primary) {
     outline-style: dashed;
-    outline-color: var(--accent);
+    outline-color: var(--focus-soft);
     opacity: 1;
   }
   .cell.empty {

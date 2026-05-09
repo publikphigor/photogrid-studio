@@ -17,6 +17,11 @@
   --accent-2: oklch(0.72 0.16 55);
   --accent-soft: oklch(0.78 0.16 55 / 0.14);
   --danger: oklch(0.66 0.18 25);
+  /* Selection / alignment guides. Inverted between themes so the outline always
+   * pops against the cell background: white on dark mode, black on light mode.
+   * --focus-soft is a translucent variant for secondary multi-selected cells. */
+  --focus: #f5f5f5;
+  --focus-soft: rgba(245, 245, 245, 0.7);
   --stage-bg: radial-gradient(circle at 50% 40%, #181818, #08080a 70%);
   --cell-bg: #1a1a1c;
   --cell-empty-a: #18181a;
@@ -59,6 +64,8 @@
   --accent-2: oklch(0.55 0.18 50);
   --accent-soft: oklch(0.62 0.18 50 / 0.12);
   --danger: oklch(0.58 0.20 25);
+  --focus: #050505;
+  --focus-soft: rgba(5, 5, 5, 0.7);
   --stage-bg: radial-gradient(circle at 50% 35%, #fcfcfd, #e8e8eb 75%);
   --cell-bg: #ececee;
   --cell-empty-a: #efeff1;

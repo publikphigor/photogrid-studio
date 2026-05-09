@@ -1,4 +1,5 @@
-import { Layers, Trash2, Upload } from 'lucide-react';
+import { useState } from 'react';
+import { Columns, Layers, Rows, Trash2, Upload } from 'lucide-react';
 import type { Action, Cell, FitMode, PhotoGridState, ShapeId } from '@/types';
 import { Slider } from '@/components/controls/Slider';
 import { Seg } from '@/components/controls/Seg';
@@ -40,6 +41,9 @@ export function CellTab({ state, dispatch }: Props) {
     );
   }
   const set = (patch: Partial<Cell>) => dispatch({ type: 'UPDATE_CELL', id: cell.id, patch });
+  const onSplit = (axis: 'row' | 'col', count: number) => {
+    dispatch({ type: 'SPLIT_CELL', id: cell.id, axis, count });
+  };
 
   const onPick = () => {
     const input = document.createElement('input');
@@ -245,6 +249,15 @@ export function CellTab({ state, dispatch }: Props) {
       </div>
 
       <div className="section">
+        <h4 className="section-title">Split</h4>
+        <SplitControls onSplit={onSplit} />
+        <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text-4)', lineHeight: 1.55 }}>
+          Splits this cell into N rows or columns. Other cells in the same band keep
+          their visual size. The image (if any) is copied into every new sub-cell.
+        </p>
+      </div>
+
+      <div className="section">
         <h4 className="section-title">Shape</h4>
         <div className="grid grid-cols-5 gap-1">
           {(Object.entries(SHAPES) as [ShapeId, (typeof SHAPES)[ShapeId]][]).map(([k, v]) => (
@@ -305,4 +318,50 @@ export function CellTab({ state, dispatch }: Props) {
       </div>
     </>
   );
+}
+
+function SplitControls({ onSplit }: { onSplit: (axis: 'row' | 'col', count: number) => void }) {
+  // Free-typing text input with numeric keyboard hint. Range 2–8 because a
+  // higher split makes each sub-cell unusably thin; one-digit keystrokes still
+  // cover every realistic case.
+  const [raw, setRaw] = useState('2');
+  const n = clampInt(raw, 2, 8, 2);
+  return (
+    <div className="row" style={{ marginBottom: 0 }}>
+      <label>Count</label>
+      <div className="flex items-center gap-2">
+        <input
+          className="num-input"
+          type="text"
+          inputMode="decimal"
+          pattern="[0-9,.]*"
+          value={raw}
+          onChange={(e) => setRaw(e.target.value.replace(/[^0-9]/g, ''))}
+          style={{ width: 56 }}
+        />
+        <button
+          className="btn"
+          style={{ height: 28, flex: 1 }}
+          onClick={() => onSplit('row', n)}
+          title={`Split into ${n} rows`}
+        >
+          <Rows size={14} /> Rows
+        </button>
+        <button
+          className="btn"
+          style={{ height: 28, flex: 1 }}
+          onClick={() => onSplit('col', n)}
+          title={`Split into ${n} columns`}
+        >
+          <Columns size={14} /> Cols
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
 }

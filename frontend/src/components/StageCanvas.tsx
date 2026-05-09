@@ -8,7 +8,19 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Image as ImageIcon, RotateCcw, Trash2, Upload, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  Columns,
+  Image as ImageIcon,
+  Layers,
+  Replace,
+  RotateCcw,
+  Rows,
+  Shapes,
+  Trash2,
+  Upload,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import type { Action, Cell, CellImageRef, PhotoGridState } from '@/types';
 import { dimensionsFor } from '@/state/presets';
 import { cellShapeCSS, shapeCSS } from '@/state/shapes';
@@ -21,6 +33,7 @@ import {
   pointToGridSlot,
   trackSizes,
 } from '@/state/reducer';
+import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 
 interface Props {
   state: PhotoGridState;
@@ -141,6 +154,15 @@ export function StageCanvas({ state, dispatch }: Props) {
   // coordinate where the mover edge currently lines up with another cell or
   // a canvas edge — rendered as a thin dashed line.
   const [guides, setGuides] = useState<{ x: number[]; y: number[] }>({ x: [], y: [] });
+  // Right-click context menu state. `cellId` is non-null when the menu was
+  // opened on a cell (so the items can target it); a null cellId means the
+  // user opened it on whitespace (no cell-scoped actions are useful — we
+  // suppress the menu instead of showing an empty popover).
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    cellId: string | null;
+  } | null>(null);
 
   // Drag bookkeeping outside React state — no re-renders during drag.
   const dragRef = useRef<ActiveDrag | null>(null);
@@ -836,7 +858,31 @@ export function StageCanvas({ state, dispatch }: Props) {
     // toolbar is outside this element so its buttons aren't affected.
     const t = e.target as HTMLElement;
     if (t.closest('[data-cell-id]') || t.closest('[data-handle-dir]')) return;
+    if (e.button === 2) return; // right-click handled separately
     dispatch({ type: 'SELECT', id: null });
+  };
+
+  // ---- Right-click: open the context menu pinned to cursor ----------------
+  // We bypass the stage's mousedown deselect for right-click and instead:
+  //  1. If the right-click landed on a cell, make sure that cell is selected
+  //     (so the menu's actions target a sensible thing). If the user already
+  //     had a multi-select that includes this cell, we keep that selection.
+  //  2. Open the menu at the cursor's viewport coordinates.
+  const onStageContextMenu = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const cellEl = target.closest('[data-cell-id]') as HTMLElement | null;
+    const cellId = cellEl?.getAttribute('data-cell-id') ?? null;
+    if (!cellId) {
+      // Whitespace right-click: nothing useful to show. Let the browser's
+      // native menu through so the user can still inspect / save the page.
+      return;
+    }
+    e.preventDefault();
+    const inMulti = selectedRef.current.includes(cellId);
+    if (!inMulti) {
+      dispatch({ type: 'SELECT', id: cellId });
+    }
+    setCtxMenu({ x: e.clientX, y: e.clientY, cellId });
   };
 
   const bg = container.bgTransparent ? 'transparent' : container.bg;
@@ -848,6 +894,7 @@ export function StageCanvas({ state, dispatch }: Props) {
       onDragOver={onStageDragOver}
       onDragLeave={onStageDragLeave}
       onMouseDown={onStageMouseDown}
+      onContextMenu={onStageContextMenu}
     >
       <div className="stage-canvas-area" ref={stageRef}>
         {dragOver && <div className="drop-overlay">drop images anywhere to fill grid</div>}
@@ -905,6 +952,7 @@ export function StageCanvas({ state, dispatch }: Props) {
                         rect={r}
                         selected={selectedCellIds.includes(cell.id)}
                         primary={primarySelectedId === cell.id}
+                        multi={selectedCellIds.length >= 2}
                         swapOver={ghost?.overId === cell.id}
                         onMouseDown={onCellMouseDown}
                         onUpload={() => uploadToCell(cell.id)}
@@ -948,7 +996,7 @@ export function StageCanvas({ state, dispatch }: Props) {
                         top: 0,
                         width: 1,
                         height: '100%',
-                        borderLeft: `1px dashed var(--accent)`,
+                        borderLeft: `1px dashed var(--focus)`,
                       }}
                     />
                   ))}
@@ -961,7 +1009,7 @@ export function StageCanvas({ state, dispatch }: Props) {
                         left: 0,
                         height: 1,
                         width: '100%',
-                        borderTop: `1px dashed var(--accent)`,
+                        borderTop: `1px dashed var(--focus)`,
                       }}
                     />
                   ))}
@@ -981,6 +1029,21 @@ export function StageCanvas({ state, dispatch }: Props) {
             backgroundImage: `url(${ghost.src})`,
             outline: ghost.mode === 'cell' ? '2px dashed var(--accent)' : '2px solid var(--accent)',
           }}
+        />
+      )}
+
+      {ctxMenu && ctxMenu.cellId && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          onClose={() => setCtxMenu(null)}
+          items={buildContextMenu({
+            cellId: ctxMenu.cellId,
+            selectedIds: selectedCellIds,
+            cells,
+            dispatch,
+            onUpload: uploadToCell,
+          })}
         />
       )}
 
@@ -1141,6 +1204,7 @@ interface CellViewProps {
   rect: { x: number; y: number; w: number; h: number };
   selected: boolean;
   primary: boolean;
+  multi: boolean;
   swapOver: boolean;
   onMouseDown: (e: MouseEvent, cell: Cell, imgEl: HTMLImageElement | null) => void;
   onUpload: () => void;
@@ -1154,6 +1218,7 @@ const CellView = memo(function CellView({
   rect,
   selected,
   primary,
+  multi,
   swapOver,
   onMouseDown,
   onUpload,
@@ -1170,12 +1235,24 @@ const CellView = memo(function CellView({
     width: rect.w,
     height: rect.h,
     ...cellShape,
-    boxShadow:
-      cell.cellBorder > 0
-        ? `0 0 0 ${cell.cellBorder}px ${cell.cellBorderColor} inset`
-        : 'none',
     viewTransitionName: `cell-${cell.id}`,
   };
+  // Cell border lives on a separate overlay so it paints ABOVE the image.
+  // (CSS paints `inset box-shadow` before children, so applying it directly to
+  // the cell would let the cell's <img> hide the stroke.) The overlay inherits
+  // the cell's clip-path / border-radius via shape CSS so non-rect cells get a
+  // shaped stroke too.
+  const borderOverlayStyle: CSSProperties | undefined =
+    cell.cellBorder > 0
+      ? {
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          ...cellShape,
+          boxShadow: `0 0 0 ${cell.cellBorder}px ${cell.cellBorderColor} inset`,
+          zIndex: 2,
+        }
+      : undefined;
   // 'native' = render image at its intrinsic pixel size in design space, so
   // the preview crops match what the backend will emit during export. The IMG
   // box is set to image.w × image.h (the original dimensions); the previewUrl
@@ -1207,7 +1284,7 @@ const CellView = memo(function CellView({
   return (
     <div
       data-cell-id={cell.id}
-      className={`cell${selected ? ' selected' : ''}${primary ? ' primary' : ''}${!cell.image ? ' empty' : ''}${swapOver ? ' drag-over' : ''}`}
+      className={`cell${selected ? ' selected' : ''}${primary ? ' primary' : ''}${multi ? ' multi-selected' : ''}${!cell.image ? ' empty' : ''}${swapOver ? ' drag-over' : ''}`}
       style={cellStyle}
       onMouseDown={(e) => onMouseDown(e, cell, imgRef.current)}
       onDoubleClick={onUpload}
@@ -1240,6 +1317,7 @@ const CellView = memo(function CellView({
           <span>click to upload</span>
         </div>
       )}
+      {borderOverlayStyle && <div style={borderOverlayStyle} aria-hidden />}
       <div className="cell-controls">
         <button
           title={cell.image ? 'Replace' : 'Upload'}
@@ -1263,3 +1341,89 @@ const CellView = memo(function CellView({
     </div>
   );
 });
+
+/** Builds the context-menu item list for the cell that was right-clicked.
+ *  Two regimes:
+ *   - Single-cell selection: image actions (upload/replace), split (rows/cols),
+ *     delete.
+ *   - Multi-cell selection: merge, sync shape (apply primary's shape to all),
+ *     delete-all. Split is hidden because it operates on a single cell. */
+function buildContextMenu({
+  cellId,
+  selectedIds,
+  cells,
+  dispatch,
+  onUpload,
+}: {
+  cellId: string;
+  selectedIds: string[];
+  cells: Cell[];
+  dispatch: (a: Action) => void;
+  onUpload: (id: string) => void;
+}): ContextMenuItem[] {
+  const cell = cells.find((c) => c.id === cellId);
+  if (!cell) return [];
+  const multi = selectedIds.length >= 2 && selectedIds.includes(cellId);
+
+  if (multi) {
+    return [
+      {
+        id: 'merge',
+        label: `Merge ${selectedIds.length} cells`,
+        icon: <Layers size={14} />,
+        shortcut: '⌘M',
+        onSelect: () => dispatch({ type: 'MERGE_CELLS', ids: selectedIds }),
+      },
+      {
+        id: 'sync',
+        label: 'Sync shape (match first selected)',
+        icon: <Shapes size={14} />,
+        onSelect: () => dispatch({ type: 'SYNC_CELLS_SHAPE', ids: selectedIds }),
+      },
+      { id: 'div1', divider: true },
+      {
+        id: 'delete-all',
+        label: `Delete ${selectedIds.length} cells`,
+        icon: <Trash2 size={14} />,
+        shortcut: '⌫',
+        danger: true,
+        onSelect: () => {
+          for (const id of selectedIds) {
+            dispatch({ type: 'REMOVE_CELL', id });
+          }
+        },
+      },
+    ];
+  }
+
+  return [
+    {
+      id: 'upload',
+      label: cell.image ? 'Replace image…' : 'Upload image…',
+      icon: cell.image ? <Replace size={14} /> : <Upload size={14} />,
+      onSelect: () => onUpload(cellId),
+    },
+    { id: 'div0', divider: true },
+    {
+      id: 'split-rows',
+      label: 'Split into 2 rows',
+      icon: <Rows size={14} />,
+      onSelect: () => dispatch({ type: 'SPLIT_CELL', id: cellId, axis: 'row', count: 2 }),
+    },
+    {
+      id: 'split-cols',
+      label: 'Split into 2 columns',
+      icon: <Columns size={14} />,
+      onSelect: () => dispatch({ type: 'SPLIT_CELL', id: cellId, axis: 'col', count: 2 }),
+    },
+    { id: 'div1', divider: true },
+    {
+      id: 'delete',
+      label: 'Delete cell',
+      icon: <Trash2 size={14} />,
+      shortcut: '⌫',
+      danger: true,
+      onSelect: () => dispatch({ type: 'REMOVE_CELL', id: cellId }),
+    },
+  ];
+}

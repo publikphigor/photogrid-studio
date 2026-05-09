@@ -8,7 +8,13 @@ export type ShapeId =
   | 'diamond'
   | 'arch'
   | 'blob'
-  | 'heart';
+  | 'heart'
+  | 'triangle'
+  | 'pentagon'
+  | 'octagon'
+  | 'star'
+  | 'parallelogram'
+  | 'chevron';
 
 export type FitMode = 'native' | 'cover' | 'contain' | 'fill';
 export type FormatId = 'png' | 'jpg' | 'webp';
@@ -133,6 +139,8 @@ export type Action =
   | { type: 'SELECT'; id: string | null }
   | { type: 'SELECT_TOGGLE'; id: string }
   | { type: 'MERGE_CELLS'; ids: string[] }
+  | { type: 'SYNC_CELLS_SHAPE'; ids: string[] }
+  | { type: 'SPLIT_CELL'; id: string; axis: 'row' | 'col'; count: number }
   | { type: 'ALIGN_GRID' }
   | { type: 'SET_ZOOM'; zoom: number }
   | { type: 'FILL_FROM_FILES'; images: CellImageRef[] }
