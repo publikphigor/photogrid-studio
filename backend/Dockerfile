@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpng16-16 \
         libtiff6 \
         libvips42 \
+        fonts-liberation \
+        fonts-liberation2 \
+        fonts-dejavu-core \
+        fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 FROM base AS build

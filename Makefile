@@ -20,10 +20,12 @@ up: env ## Start stack in background
 build: env ## Build images (--pull)
 	$(COMPOSE) build --pull
 
-rebuild: build restart ## Build then restart
+rebuild: build ## Build then recreate (so containers pick up the new image)
+	$(COMPOSE) up -d
+	@PORT=$$(grep -E '^FRONTEND_PORT=' .env 2>/dev/null | head -1 | cut -d= -f2); echo "→ frontend: http://localhost:$${PORT:-8080}"
 
-restart: ## Restart running services
-	$(COMPOSE) restart
+restart: ## Recreate running services with the latest built image
+	$(COMPOSE) up -d --force-recreate
 
 down: ## Stop stack
 	$(COMPOSE) down
