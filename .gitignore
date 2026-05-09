@@ -15,6 +15,8 @@ node_modules/
 dist/
 .vite/
 coverage/
+package-lock.json
+*.tsbuildinfo
 
 # OS
 .DS_Store
