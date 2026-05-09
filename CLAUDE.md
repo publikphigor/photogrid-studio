@@ -5,6 +5,12 @@ backend. The browser is preview-only; **export resolution comes from
 server-side compositing of the original-resolution sources**, never from a
 canvas screenshot.
 
+> **See `ARCHITECTURE.md`** for the full project layout and mechanism: layout
+> model (track sizes + per-cell pixel offsets), the resize / drag / select
+> flow, the upload→render pipeline end-to-end, and a complete table of where
+> each user-facing feature is implemented. This file is the operating manual;
+> `ARCHITECTURE.md` is the explanation of how the parts fit together.
+
 ## Stack
 
 - **frontend/** — Vite + React 18 + TypeScript + Tailwind v3, served by nginx.
@@ -62,22 +68,57 @@ template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, 
 
 ## Hot conventions
 
+- **Cells are absolutely positioned, not CSS grid.** `.grid-area` is just
+  `position: relative`; `StageCanvas.tsx` calls `computeCellRect(cell, grid,
+  …)` and assigns `left/top/width/height` per cell. This is what lets one
+  row's column boundary differ from another row's after an edge resize.
+  See `ARCHITECTURE.md §4` for the layout model.
+- **Two layers of size control:**
+  - `grid.colSizes` / `grid.rowSizes` — per-track fr-unit weights that scale
+    every cell in that band. Updated by **corner** handles via
+    `RESIZE_TRACKS`.
+  - `cell.dx / dy / dw / dh` — per-cell pixel offsets. Updated by **edge**
+    handles via `EDGE_RESIZE` so only the dragged cell + its immediate
+    neighbour(s) move.
 - **No HTML5 drag inside cells.** All in-canvas dragging is mouse-based
-  (`StageCanvas.tsx → onCellMouseDown` + a single window mousemove/mouseup
-  listener). Three modes:
-  - selected populated cell, drag inside → reposition (rAF-driven `imgEl.style.transform`, dispatch only on mouseup).
-  - unselected populated cell, drag → swap **images** with target cell.
-  - shift+drag any populated cell → swap **cell positions** with target.
-- **Resize handles render outside `.cell`.** `.cell { overflow: hidden }`
-  clips anything offset to `-5px`. Handles are an absolute overlay over
-  `.grid-area` driven by `ResizeHandles` in `StageCanvas.tsx`. 8 directions,
-  rAF-throttled, integer-span de-duped.
+  (`StageCanvas.tsx → onCellMouseDown` + window mousemove/mouseup listeners).
+  Modes:
+  - drag inside any populated cell → reposition image (`offsetX/Y`).
+  - shift+drag a populated cell → move/swap. Drop on a cell → swap positions
+    + spans. Drop on whitespace → snap to the largest empty rect at that
+    point (`pointToGridSlot` + `MOVE_CELL_TO_RECT`).
+  - cmd/ctrl+click → toggle this cell into the multi-selection.
+  - wheel over a populated cell → zoom the image (`cell.scale`).
+- **Click semantics:** empty cell → file picker; populated *unfocused* →
+  just select; populated *primary-selected* → file picker (replace);
+  cmd/ctrl+click suppresses the picker (it was multi-select intent).
+  Clicking the dark stage backdrop deselects; `Escape` deselects too.
+- **Selection is an array.** `state.selectedCellIds: string[]`; primary is
+  `[0]`. Inspector reads the primary; merge keeps the primary's image and
+  removes the rest into the bounding rect. `⌘M` triggers merge when 2+ are
+  selected.
+- **Resize handles render outside `.cell`.** Handles are an absolute overlay
+  over `.board` driven by `<ResizeHandles>`; they read the primary selected
+  cell's rect via `computeCellRect`. 8 directions; corner handles use
+  `RESIZE_TRACKS`, edge handles use `EDGE_RESIZE`. Both modes capture
+  alignment lines (every other cell's edges + canvas inner edges) and render
+  thin dashed guides while the dragged edge is within 4 px of any of them.
+- **Add / remove / align cleanly.** `ADD_CELL` calls `findMaxEmptyRect` and
+  fills the largest empty rectangle (only grows the grid as a last resort).
+  `REMOVE_CELL` runs `compactAfterRemoval` to drop empty tracks, expand a
+  matching-band neighbour, or extend an adjacent cell's pixel offsets.
+  `ALIGN_GRID` zeros every cell's `dx/dy/dw/dh` and absorbs leftover
+  whitespace.
 - **View Transitions** wrap `MOVE_CELL_TO_CELL` and `SWAP_CELLS` so cells
   animate to their new slots when supported by the browser. Each cell sets
   `viewTransitionName: cell-${id}`.
-- **Reflow on resize/move.** `reducer.ts:reflowAroundMover` packs displaced
-  cells into the next free slot (preserving span where possible, falling
-  back to 1×1, growing the grid by a row as last resort).
+- **Span-based resize via the inspector** (`MOVE_CELL` / `RESIZE_CELL` from
+  the number inputs) still uses `reflowAroundMover` to relocate displaced
+  cells. `RESIZE_CELL` rejects when reflow would need to grow the grid.
+- **`fit: 'native'` is the default.** The IMG box is sized to `image.w ×
+  image.h` (the **original** dimensions, not the preview's) so the on-screen
+  crop matches what Pillow emits at export. `compose_cell` accepts
+  `pixel_scale` so design-pixel offsets translate to output pixels correctly.
 - **State persistence** is templates only (`localStorage` key
   `pg_templates_v1`). On save we strip `previewUrl` blobs (object URLs don't
   survive reload). On load, `LeftPanel` re-fetches each cell's image from
@@ -95,11 +136,20 @@ template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, 
 
 ## Don't break these invariants
 
-- **Geometry is shared with the prototype.** `frontend/src/state/presets.ts:dimensionsFor`
-  and `backend/photogrid/renderer/layout.py:dimensions_for` must agree on
-  output size; same for `cell_box`. The numbers in
-  `backend/photogrid/renderer/shapes.py` are calibrated to match the
-  frontend's `clip-path` polygons — change one, change both.
+- **Frontend & backend layout math must agree.** `dimensionsFor` /
+  `dimensions_for`, `computeCellRect` / `cell_box`, and `grid_tracks` (which
+  now consumes `colSizes` / `rowSizes` and returns per-track pixel arrays)
+  are mirrored on both sides. Per-cell pixel offsets (`dx/dy/dw/dh`) are in
+  design pixels on the wire and multiplied by `output.scale` server-side
+  inside `cell_box`. Same for `cell.offsetX/Y` inside `compose_cell` via
+  `pixel_scale`. If you change either side, change both.
+- **`fit: 'native'` uses the ORIGINAL image dimensions.** `ingestFile`
+  stores `upload.w / upload.h` (not the preview blob's size) in
+  `CellImageRef.w/h` so the IMG box and the backend renderer agree on
+  cropping. Don't accidentally swap that back to preview dims.
+- **Shape masks are calibrated.** The numbers in
+  `backend/photogrid/renderer/shapes.py` match the frontend's `clip-path`
+  polygons. Change one, change both.
 - **Image MIME validation** runs at upload (python-magic + Pillow probe);
   decompression-bomb guard is `Image.MAX_IMAGE_PIXELS = settings.max_pixels`.
   Bumping `MAX_PIXELS_MP` past a few hundred MP eats memory fast.
@@ -124,19 +174,25 @@ template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, 
 
 ```
 frontend/src/
-  App.tsx              top-level + keybinds + saveBlob (folder/dialog/anchor)
+  App.tsx              top-level + keybinds (⌘Z/Y, Esc, Del, ⌘M, ⌘E) + saveBlob
   state/
-    reducer.ts         all actions, reflow, default state
+    reducer.ts         all actions, layout helpers (computeCellRect,
+                       findMaxEmptyRect, pointToGridSlot, alignGrid,
+                       compactAfterRemoval, edgeNeighbors, coverFitScale,
+                       cellPixelSize, trackSizes), default state
     history.ts         useHistoryReducer (60-step ring buffer)
     presets.ts         LAYOUT_PRESETS, ASPECT_RATIOS, dimensionsFor
     shapes.ts          SHAPES catalog + cellShapeCSS / shapeCSS
     templates.ts       localStorage CRUD
   components/
-    StageCanvas.tsx    canvas, cells, drag pipeline, resize overlay
-    LeftPanel.tsx      presets + layers + saved templates
+    StageCanvas.tsx    canvas, cells (absolute-positioned), drag pipeline,
+                       resize overlay (track + edge modes), alignment guides
+    LeftPanel.tsx      presets + layers + saved templates (cmd+click multi)
+    TopBar.tsx         undo/redo, theme, Align Grid, Upload, Export
     Inspector/         Container / Cell / Output tabs
+                       (Cell tab shows Merge button when 2+ selected)
   api/
-    client.ts          ingestFile, exportImage, imageBlobUrl
+    client.ts          ingestFile (stores ORIGINAL w/h), exportImage, imageBlobUrl
     folder.ts          FSA directory handle persistence
     hash.ts            WebCrypto SHA-256
 
@@ -147,12 +203,18 @@ backend/photogrid/
     health.py          /api/healthz
   cache/disk.py        sha256 disk cache + sweeper
   renderer/
-    pillow_renderer.py main pipeline (mirror of prototype exporter.jsx)
+    pillow_renderer.py main pipeline; passes pixel_scale to compose_cell and
+                       per-cell dx/dy/dw/dh × scale to cell_box
     shapes.py          masks + inset stroke band
-    cells.py           per-cell compose with rotation cover-fit
+    cells.py           per-cell compose; honours fit='native', cell.offsetX/Y
+                       × pixel_scale, rotation cover-fit
     filters.py         CSS filter → PIL ops
-    layout.py          dimensions_for, grid_tracks, cell_box
-  models.py            pydantic mirrors of the frontend types
+    layout.py          dimensions_for; grid_tracks now returns per-track
+                       col_widths / row_heights (non-uniform); cell_box accepts
+                       dx/dy/dw/dh
+  models.py            pydantic mirrors of the frontend types (Cell carries
+                       dx/dy/dw/dh; Grid carries colSizes/rowSizes;
+                       FitMode includes 'native')
 ```
 
 ## Gotchas you'll hit
