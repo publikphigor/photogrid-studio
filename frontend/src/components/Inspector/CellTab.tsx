@@ -1,12 +1,25 @@
 import { useState } from 'react';
 import { Columns, Layers, Rows, Trash2, Upload } from 'lucide-react';
-import type { Action, Cell, FitMode, PhotoGridState, ShapeId } from '@/types';
+import type {
+  Action,
+  Cell,
+  CellFilters,
+  FitMode,
+  PhotoGridState,
+  ShapeId,
+} from '@/types';
 import { Slider } from '@/components/controls/Slider';
 import { Seg } from '@/components/controls/Seg';
 import { ColorField } from '@/components/controls/ColorField';
 import { SHAPES } from '@/state/shapes';
 import { ingestFile } from '@/api/client';
-import { cellPixelSize, coverFitScale } from '@/state/reducer';
+import {
+  DEFAULT_FILTERS,
+  cellPixelSize,
+  coverFitScale,
+  filtersToCss,
+  getCellFilters,
+} from '@/state/reducer';
 import { dimensionsFor } from '@/state/presets';
 
 interface Props {
@@ -14,19 +27,10 @@ interface Props {
   dispatch: (a: Action) => void;
 }
 
-const FILTERS = [
-  { value: 'none', label: 'None' },
-  { value: 'grayscale(100%)', label: 'Grayscale' },
-  { value: 'sepia(80%)', label: 'Sepia' },
-  { value: 'contrast(1.15) saturate(1.2)', label: 'Vivid' },
-  { value: 'brightness(1.1) contrast(0.95) saturate(0.85)', label: 'Soft' },
-  { value: 'contrast(1.3) saturate(0.7)', label: 'Faded' },
-  { value: 'hue-rotate(180deg)', label: 'Cool' },
-  { value: 'contrast(1.1) brightness(0.9) sepia(0.2)', label: 'Vintage' },
-];
-
 export function CellTab({ state, dispatch }: Props) {
-  const cell = state.cells.find((c) => c.id === state.selectedCellIds[0]);
+  const selectedIds = state.selectedCellIds;
+  const cell = state.cells.find((c) => c.id === selectedIds[0]);
+  const multi = selectedIds.length >= 2;
   if (!cell) {
     return (
       <div
@@ -40,7 +44,17 @@ export function CellTab({ state, dispatch }: Props) {
       </div>
     );
   }
-  const set = (patch: Partial<Cell>) => dispatch({ type: 'UPDATE_CELL', id: cell.id, patch });
+  // Single-select edits dispatch UPDATE_CELL; multi-select edits fan out via
+  // UPDATE_CELLS so every selected cell receives the same patch in a single
+  // undo step. Position / Span / Split are intentionally left at single-cell
+  // semantics — they have no obvious meaning for a batch.
+  const set = (patch: Partial<Cell>) => {
+    if (multi) {
+      dispatch({ type: 'UPDATE_CELLS', ids: selectedIds, patch });
+    } else {
+      dispatch({ type: 'UPDATE_CELL', id: cell.id, patch });
+    }
+  };
   const onSplit = (axis: 'row' | 'col', count: number) => {
     dispatch({ type: 'SPLIT_CELL', id: cell.id, axis, count });
   };
@@ -61,7 +75,13 @@ export function CellTab({ state, dispatch }: Props) {
           dims.h - state.container.padding * 2 - state.container.gap * (state.grid.rows - 1);
         const sz = cellPixelSize(cell, state.grid, innerW, innerH, state.container.gap);
         const scale = cell.fit === 'native' ? coverFitScale(sz.w, sz.h, img.w, img.h) : 1;
-        set({ image: img, offsetX: 0, offsetY: 0, scale });
+        // Image upload always targets the primary cell, even when multi-selected
+        // (it makes no sense to dump one image into many cells).
+        dispatch({
+          type: 'UPDATE_CELL',
+          id: cell.id,
+          patch: { image: img, offsetX: 0, offsetY: 0, scale },
+        });
       } catch (e) {
         console.error('upload failed', e);
       }
@@ -69,66 +89,95 @@ export function CellTab({ state, dispatch }: Props) {
     input.click();
   };
 
+  // Filter source-of-truth for the inspector display: the primary cell's
+  // current params. Editing a slider patches every selected cell; the legacy
+  // CSS string is kept in sync so downstream code (and exports from older
+  // templates) keep working.
+  const currentFilters = getCellFilters(cell);
+  const setFilter = (patch: Partial<CellFilters>) => {
+    const next = { ...currentFilters, ...patch };
+    set({ filters: next, filter: filtersToCss(next) });
+  };
+  const resetFilters = () => {
+    set({ filters: { ...DEFAULT_FILTERS }, filter: 'none' });
+  };
+
   return (
     <>
-      {state.selectedCellIds.length >= 2 && (
+      {multi && (
         <div className="section">
-          <h4 className="section-title">{state.selectedCellIds.length} cells selected</h4>
-          <button
-            className="btn w-full"
-            onClick={() => dispatch({ type: 'MERGE_CELLS', ids: state.selectedCellIds })}
-            title="Merge selected cells into one (first cell's image wins) — ⌘M"
-          >
-            <Layers size={14} /> Merge into one
-          </button>
-          <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'var(--text-3)' }}>
-            Inspector below shows the primary cell — the one whose image survives the merge.
+          <h4 className="section-title">{selectedIds.length} cells selected</h4>
+          <p style={{ margin: '0 0 8px', fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Style edits below apply to every selected cell. Position, Split, and
+            image upload are hidden — they only make sense for a single cell.
           </p>
+          <div className="flex gap-2">
+            <button
+              className="btn"
+              style={{ flex: 1 }}
+              onClick={() => dispatch({ type: 'MERGE_CELLS', ids: selectedIds })}
+              title="Merge selected cells into one (first cell's image wins) — ⌘M"
+            >
+              <Layers size={14} /> Merge
+            </button>
+            <button
+              className="btn"
+              style={{ flex: 1, color: 'var(--danger)' }}
+              onClick={() => {
+                for (const id of selectedIds) dispatch({ type: 'REMOVE_CELL', id });
+              }}
+            >
+              <Trash2 size={14} /> Delete all
+            </button>
+          </div>
         </div>
       )}
-      <div className="section">
-        <h4 className="section-title">Image</h4>
-        {cell.image ? (
-          <div className="flex gap-2 mb-2.5">
-            <div
-              style={{
-                width: 60,
-                height: 60,
-                flexShrink: 0,
-                borderRadius: 6,
-                backgroundImage: cell.image.previewUrl ? `url(${cell.image.previewUrl})` : undefined,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                boxShadow: 'inset 0 0 0 1px var(--line)',
-              }}
-            />
-            <div className="flex-1 min-w-0">
+
+      {!multi && (
+        <div className="section">
+          <h4 className="section-title">Image</h4>
+          {cell.image ? (
+            <div className="flex gap-2 mb-2.5">
               <div
                 style={{
-                  fontSize: 12,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  width: 60,
+                  height: 60,
+                  flexShrink: 0,
+                  borderRadius: 6,
+                  backgroundImage: cell.image.previewUrl ? `url(${cell.image.previewUrl})` : undefined,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  boxShadow: 'inset 0 0 0 1px var(--line)',
                 }}
-              >
-                {cell.image.name}
-              </div>
-              <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: 'var(--text-3)' }}>
-                {cell.image.w} × {cell.image.h}
+              />
+              <div className="flex-1 min-w-0">
+                <div
+                  style={{
+                    fontSize: 12,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {cell.image.name}
+                </div>
+                <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: 'var(--text-3)' }}>
+                  {cell.image.w} × {cell.image.h}
+                </div>
               </div>
             </div>
-          </div>
-        ) : (
-          <p style={{ margin: '0 0 10px', color: 'var(--text-3)', fontSize: 12 }}>
-            No image yet — drop one on the cell or upload below.
-          </p>
-        )}
-        <button className="btn w-full" onClick={onPick}>
-          <Upload size={14} /> {cell.image ? 'Replace' : 'Upload'}
-        </button>
-      </div>
+          ) : (
+            <p style={{ margin: '0 0 10px', color: 'var(--text-3)', fontSize: 12 }}>
+              No image yet — drop one on the cell or upload below.
+            </p>
+          )}
+          <button className="btn w-full" onClick={onPick}>
+            <Upload size={14} /> {cell.image ? 'Replace' : 'Upload'}
+          </button>
+        </div>
+      )}
 
-      {cell.image && (
+      {(cell.image || multi) && (
         <>
           <div className="section">
             <h4 className="section-title">Fit</h4>
@@ -173,77 +222,167 @@ export function CellTab({ state, dispatch }: Props) {
           </div>
 
           <div className="section">
-            <h4 className="section-title">Filter</h4>
-            <select
-              className="num-input"
-              style={{ height: 28, width: '100%', textAlign: 'left', padding: '0 8px' }}
-              value={cell.filter}
-              onChange={(e) => set({ filter: e.target.value })}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 10,
+              }}
             >
-              {FILTERS.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
+              <h4 className="section-title" style={{ margin: 0 }}>Filter</h4>
+              <button
+                className="btn ghost"
+                style={{ height: 22, padding: '0 8px', fontSize: 11 }}
+                onClick={resetFilters}
+                title="Reset all filters"
+              >
+                Reset
+              </button>
+            </div>
+            <div className="row">
+              <label>Grayscale</label>
+              <Slider
+                value={Math.round(currentFilters.grayscale * 100)}
+                min={0}
+                max={100}
+                onChange={(v) => setFilter({ grayscale: v / 100 })}
+                suffix="%"
+              />
+            </div>
+            <div className="row">
+              <label>Sepia</label>
+              <Slider
+                value={Math.round(currentFilters.sepia * 100)}
+                min={0}
+                max={100}
+                onChange={(v) => setFilter({ sepia: v / 100 })}
+                suffix="%"
+              />
+            </div>
+            <div className="row">
+              <label>Contrast</label>
+              <Slider
+                value={Math.round(currentFilters.contrast * 100)}
+                min={0}
+                max={200}
+                onChange={(v) => setFilter({ contrast: v / 100 })}
+                suffix="%"
+              />
+            </div>
+            <div className="row">
+              <label>Brightness</label>
+              <Slider
+                value={Math.round(currentFilters.brightness * 100)}
+                min={0}
+                max={200}
+                onChange={(v) => setFilter({ brightness: v / 100 })}
+                suffix="%"
+              />
+            </div>
+            <div className="row">
+              <label>Saturate</label>
+              <Slider
+                value={Math.round(currentFilters.saturate * 100)}
+                min={0}
+                max={200}
+                onChange={(v) => setFilter({ saturate: v / 100 })}
+                suffix="%"
+              />
+            </div>
+            <div className="row">
+              <label>Hue</label>
+              <Slider
+                value={Math.round(currentFilters.hueRotate)}
+                min={-180}
+                max={180}
+                onChange={(v) => setFilter({ hueRotate: v })}
+                suffix="°"
+              />
+            </div>
+            <div className="row">
+              <label>Invert</label>
+              <Slider
+                value={Math.round(currentFilters.invert * 100)}
+                min={0}
+                max={100}
+                onChange={(v) => setFilter({ invert: v / 100 })}
+                suffix="%"
+              />
+            </div>
+            <div className="row">
+              <label>Blur</label>
+              <Slider
+                value={currentFilters.blur}
+                min={0}
+                max={20}
+                step={0.1}
+                onChange={(v) => setFilter({ blur: v })}
+                suffix="px"
+              />
+            </div>
           </div>
         </>
       )}
 
-      <div className="section">
-        <h4 className="section-title">Position</h4>
-        <div className="grid grid-cols-2 gap-x-2 gap-y-2">
-          <PositionField
-            label="Span W"
-            title="Column span"
-            min={1}
-            max={state.grid.cols}
-            value={cell.colSpan}
-            onCommit={(v) =>
-              dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: v, rowSpan: cell.rowSpan })
-            }
-          />
-          <PositionField
-            label="Span H"
-            title="Row span"
-            min={1}
-            max={state.grid.rows}
-            value={cell.rowSpan}
-            onCommit={(v) =>
-              dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: cell.colSpan, rowSpan: v })
-            }
-          />
-          <PositionField
-            label="Col"
-            title="Column start"
-            min={1}
-            max={state.grid.cols}
-            value={cell.colStart}
-            onCommit={(v) =>
-              dispatch({ type: 'MOVE_CELL', id: cell.id, col: v, row: cell.rowStart })
-            }
-          />
-          <PositionField
-            label="Row"
-            title="Row start"
-            min={1}
-            max={state.grid.rows}
-            value={cell.rowStart}
-            onCommit={(v) =>
-              dispatch({ type: 'MOVE_CELL', id: cell.id, col: cell.colStart, row: v })
-            }
-          />
+      {!multi && (
+        <div className="section">
+          <h4 className="section-title">Position</h4>
+          <div className="grid grid-cols-2 gap-x-2 gap-y-2">
+            <PositionField
+              label="Span W"
+              title="Column span"
+              min={1}
+              max={state.grid.cols}
+              value={cell.colSpan}
+              onCommit={(v) =>
+                dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: v, rowSpan: cell.rowSpan })
+              }
+            />
+            <PositionField
+              label="Span H"
+              title="Row span"
+              min={1}
+              max={state.grid.rows}
+              value={cell.rowSpan}
+              onCommit={(v) =>
+                dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: cell.colSpan, rowSpan: v })
+              }
+            />
+            <PositionField
+              label="Col"
+              title="Column start"
+              min={1}
+              max={state.grid.cols}
+              value={cell.colStart}
+              onCommit={(v) =>
+                dispatch({ type: 'MOVE_CELL', id: cell.id, col: v, row: cell.rowStart })
+              }
+            />
+            <PositionField
+              label="Row"
+              title="Row start"
+              min={1}
+              max={state.grid.rows}
+              value={cell.rowStart}
+              onCommit={(v) =>
+                dispatch({ type: 'MOVE_CELL', id: cell.id, col: cell.colStart, row: v })
+              }
+            />
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="section">
-        <h4 className="section-title">Split</h4>
-        <SplitControls onSplit={onSplit} />
-        <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text-4)', lineHeight: 1.55 }}>
-          Splits this cell into N rows or columns. Other cells in the same band keep
-          their visual size. The image (if any) is copied into every new sub-cell.
-        </p>
-      </div>
+      {!multi && (
+        <div className="section">
+          <h4 className="section-title">Split</h4>
+          <SplitControls onSplit={onSplit} />
+          <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--text-4)', lineHeight: 1.55 }}>
+            Splits this cell into N rows or columns. Other cells in the same band keep
+            their visual size. The image (if any) is copied into every new sub-cell.
+          </p>
+        </div>
+      )}
 
       <div className="section">
         <h4 className="section-title">Shape</h4>
@@ -292,23 +431,22 @@ export function CellTab({ state, dispatch }: Props) {
         )}
       </div>
 
-      <div className="section">
-        <button
-          className="btn w-full"
-          style={{ color: 'var(--danger)', borderColor: 'transparent' }}
-          onClick={() => dispatch({ type: 'REMOVE_CELL', id: cell.id })}
-        >
-          <Trash2 size={14} /> Remove cell
-        </button>
-      </div>
+      {!multi && (
+        <div className="section">
+          <button
+            className="btn w-full"
+            style={{ color: 'var(--danger)', borderColor: 'transparent' }}
+            onClick={() => dispatch({ type: 'REMOVE_CELL', id: cell.id })}
+          >
+            <Trash2 size={14} /> Remove cell
+          </button>
+        </div>
+      )}
     </>
   );
 }
 
 function SplitControls({ onSplit }: { onSplit: (axis: 'row' | 'col', count: number) => void }) {
-  // Free-typing text input with numeric keyboard hint. Range 2–8 because a
-  // higher split makes each sub-cell unusably thin; one-digit keystrokes still
-  // cover every realistic case.
   const [raw, setRaw] = useState('2');
   const n = clampInt(raw, 2, 8, 2);
   return (
@@ -351,9 +489,8 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
   return Math.max(min, Math.min(max, parsed));
 }
 
-/** Compact label-above-input field for the Position grid. Keeps a buffered
- *  edit so the user can clear the field and type a fresh value (matches the
- *  Slider's commit-on-blur pattern). */
+/** Compact label-above-input field for the Position grid. Buffered edit keeps
+ *  partial keystrokes off the reducer until commit, mirroring the Slider. */
 function PositionField({
   label,
   title,

@@ -9,6 +9,8 @@ import {
   useState,
 } from 'react';
 import {
+  ClipboardCopy,
+  ClipboardPaste,
   Columns,
   Image as ImageIcon,
   Layers,
@@ -21,7 +23,15 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type { Action, Cell, CellImageRef, PhotoGridState } from '@/types';
+import type {
+  Action,
+  Cell,
+  CellImageRef,
+  PhotoGridState,
+  TextLayer,
+  TextLayerZ,
+  Watermark,
+} from '@/types';
 import { dimensionsFor } from '@/state/presets';
 import { cellShapeCSS, shapeCSS } from '@/state/shapes';
 import { ingestFile } from '@/api/client';
@@ -30,9 +40,9 @@ import {
   cellPixelSize,
   computeCellRect,
   coverFitScale,
-  pointToGridSlot,
   trackSizes,
 } from '@/state/reducer';
+import { StyleClipboard, type CellStyle } from '@/state/styleClipboard';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 
 interface Props {
@@ -96,7 +106,12 @@ interface ResizeState {
   alignYs: number[];
 }
 
-type DragKind = 'reposition' | 'swap' | 'move';
+/** What a mouse drag inside a cell means.
+ *  - `reposition`: drag the IMAGE inside the cell (no shift, populated cell).
+ *  - `swap`: shift+drag a populated cell — drop on another cell to swap their
+ *    IMAGES (positions/spans stay put).
+ */
+type DragKind = 'reposition' | 'swap';
 
 interface ActiveDrag {
   kind: DragKind;
@@ -125,9 +140,9 @@ interface ActiveDrag {
   /** Was this cell the PRIMARY selection at mousedown? Plain click on a
    *  primary-selected populated cell triggers the file picker on mouseup. */
   wasPrimary: boolean;
-  /** Was the click held with cmd/ctrl? Suppress click-as-picker behavior
-   *  because the modifier expressed multi-select intent. */
-  cmdOrCtrl: boolean;
+  /** Was shift held at mousedown? On click → toggle multi-selection; on
+   *  drag → swap images. */
+  shift: boolean;
 }
 
 interface GhostState {
@@ -163,6 +178,15 @@ export function StageCanvas({ state, dispatch }: Props) {
     y: number;
     cellId: string | null;
   } | null>(null);
+  // Subscribe to the in-memory style clipboard so "Paste style" appears (and
+  // disappears) reactively as the buffer is filled or cleared.
+  const [clipboardStyle, setClipboardStyle] = useState<CellStyle | null>(() =>
+    StyleClipboard.peek(),
+  );
+  useEffect(
+    () => StyleClipboard.subscribe(() => setClipboardStyle(StyleClipboard.peek())),
+    [],
+  );
 
   // Drag bookkeeping outside React state — no re-renders during drag.
   const dragRef = useRef<ActiveDrag | null>(null);
@@ -243,42 +267,68 @@ export function StageCanvas({ state, dispatch }: Props) {
   // ---- File picker per cell -----------------------------------------------
   // Multi-select: first image lands in the clicked cell; surplus fills empty
   // cells in row-major order; remaining images are discarded (no grid growth).
+  //
+  // Guarded against rapid re-entry: an accidental triple-click would otherwise
+  // call this three times, opening three OS file dialogs back-to-back. The
+  // `pickerOpenRef` flag stays true until the picker resolves (either a file
+  // is chosen or the user cancels). On browsers that fire `cancel`, we use it;
+  // otherwise the focus/blur fallback releases the lock.
+  const pickerOpenRef = useRef(false);
   const uploadToCell = (id: string) => {
+    if (pickerOpenRef.current) return;
+    pickerOpenRef.current = true;
+    const release = () => {
+      pickerOpenRef.current = false;
+    };
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.multiple = true;
     input.onchange = async () => {
-      const files = [...(input.files ?? [])];
-      if (!files.length) return;
-      const imgs: CellImageRef[] = [];
-      for (const f of files) {
-        try {
-          imgs.push(await ingestFile(f));
-        } catch (e) {
-          console.error('upload failed', f.name, e);
+      try {
+        const files = [...(input.files ?? [])];
+        if (!files.length) return;
+        const imgs: CellImageRef[] = [];
+        for (const f of files) {
+          try {
+            imgs.push(await ingestFile(f));
+          } catch (e) {
+            console.error('upload failed', f.name, e);
+          }
         }
-      }
-      if (!imgs.length) return;
-      const cell = cells.find((c) => c.id === id);
-      const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
-      const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
-      const cellSize = cell
-        ? cellPixelSize(cell, grid, innerW, innerH, container.gap)
-        : { w: dims.w, h: dims.h };
-      const useNative = (cell?.fit ?? 'native') === 'native';
-      const initScale = useNative
-        ? coverFitScale(cellSize.w, cellSize.h, imgs[0].w, imgs[0].h)
-        : 1;
-      dispatch({
-        type: 'UPDATE_CELL',
-        id,
-        patch: { image: imgs[0], offsetX: 0, offsetY: 0, scale: initScale },
-      });
-      if (imgs.length > 1) {
-        dispatch({ type: 'FILL_EMPTY_NO_GROW', images: imgs.slice(1) });
+        if (!imgs.length) return;
+        const cell = cells.find((c) => c.id === id);
+        const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
+        const innerH = dims.h - container.padding * 2 - container.gap * (grid.rows - 1);
+        const cellSize = cell
+          ? cellPixelSize(cell, grid, innerW, innerH, container.gap)
+          : { w: dims.w, h: dims.h };
+        const useNative = (cell?.fit ?? 'native') === 'native';
+        const initScale = useNative
+          ? coverFitScale(cellSize.w, cellSize.h, imgs[0].w, imgs[0].h)
+          : 1;
+        dispatch({
+          type: 'UPDATE_CELL',
+          id,
+          patch: { image: imgs[0], offsetX: 0, offsetY: 0, scale: initScale },
+        });
+        if (imgs.length > 1) {
+          dispatch({ type: 'FILL_EMPTY_NO_GROW', images: imgs.slice(1) });
+        }
+      } finally {
+        release();
       }
     };
+    // `cancel` fires on browsers that support it (Chromium/Safari) when the
+    // user dismisses the picker without selecting. On Firefox we fall back to
+    // window focus — the focus event fires after the picker closes.
+    input.addEventListener('cancel', release, { once: true });
+    const onFocusOnce = () => {
+      window.removeEventListener('focus', onFocusOnce);
+      // Defer slightly so `change` (if a file was selected) wins the race.
+      setTimeout(release, 200);
+    };
+    window.addEventListener('focus', onFocusOnce);
     input.click();
   };
 
@@ -660,22 +710,27 @@ export function StageCanvas({ state, dispatch }: Props) {
   // ---- Unified cell mouse drag (no HTML5 drag) ----------------------------
   const onCellMouseDown = useCallback(
     (e: MouseEvent, cell: Cell, imgEl: HTMLImageElement | null) => {
+      // Right- and middle-clicks have their own handlers (context menu /
+      // browser default). Don't kick off a drag or treat them as a click —
+      // letting them fall through to the selection logic was the path that
+      // re-opened the file picker on every right-click.
+      if (e.button !== 0) return;
       e.stopPropagation();
       const tgt = e.target as HTMLElement;
       if (tgt.closest('.cell-handle') || tgt.closest('.cell-controls button')) return;
 
       // Selection rules:
-      //  - cmd/ctrl+click toggles this cell into the multi-selection.
+      //  - shift+click toggles this cell into the multi-selection (resolved
+      //    on mouseup so shift+drag can repurpose the gesture for image swap
+      //    without leaving a dangling selection toggle behind).
       //  - plain click on a cell that isn't selected makes it the sole
       //    selection (no picker yet).
-      //  - plain click on an already-primary-selected populated cell will be
-      //    treated as a "reopen" intent → opens the file picker on mouseup.
+      //  - plain click on an already-primary-selected populated cell is a
+      //    "reopen" intent → opens the file picker on mouseup.
       const wasSelected = selectedRef.current.includes(cell.id);
       const wasPrimary = selectedRef.current[0] === cell.id;
-      const cmdOrCtrl = e.metaKey || e.ctrlKey;
-      if (cmdOrCtrl) {
-        dispatch({ type: 'SELECT_TOGGLE', id: cell.id });
-      } else if (!wasSelected) {
+      const shift = e.shiftKey;
+      if (!shift && !wasSelected) {
         dispatch({ type: 'SELECT', id: cell.id });
       }
 
@@ -684,14 +739,11 @@ export function StageCanvas({ state, dispatch }: Props) {
       const invZoom = boardRect && boardRect.width > 0 ? dims.w / boardRect.width : 1;
 
       // Drag rules:
-      //  - shift+drag → swap cell positions (move kind).
+      //  - shift+drag from a populated cell → swap IMAGES with the drop
+      //    target (positions/spans untouched).
       //  - drag inside a populated cell → reposition image.
       //  - drag inside an empty cell → no-op (click path runs on mouseup).
-      const kind: DragKind = !cell.image
-        ? 'reposition'
-        : e.shiftKey
-          ? 'move'
-          : 'reposition';
+      const kind: DragKind = cell.image && shift ? 'swap' : 'reposition';
 
       dragRef.current = {
         kind,
@@ -713,7 +765,7 @@ export function StageCanvas({ state, dispatch }: Props) {
         lastOffsetY: cell.offsetY,
         overId: null,
         wasPrimary,
-        cmdOrCtrl,
+        shift,
       };
     },
     [dispatch, dims.w],
@@ -745,7 +797,7 @@ export function StageCanvas({ state, dispatch }: Props) {
         x: drag.curX,
         y: drag.curY,
         src: drag.ghostSrc,
-        mode: drag.kind === 'move' ? 'cell' : 'image',
+        mode: drag.kind === 'swap' ? 'cell' : 'image',
         overId: drag.overId,
       });
     };
@@ -778,15 +830,16 @@ export function StageCanvas({ state, dispatch }: Props) {
       }
       const cell = cellsRef.current.find((c) => c.id === drag.cellId);
       if (!drag.moved) {
-        // Pure click — interpret per the spec:
-        //  - empty cell → open the file picker.
-        //  - populated cell that was already PRIMARY → open the picker
-        //    (re-clicking a focused image opens "replace").
-        //  - populated cell that wasn't primary → just selected, no picker.
-        //  - cmd/ctrl modifier suppresses picker (it was a multi-select).
-        if (cell && !drag.cmdOrCtrl) {
-          if (!cell.image) uploadToCell(cell.id);
-          else if (drag.wasPrimary) uploadToCell(cell.id);
+        // Pure click. Shift resolves to a multi-selection toggle (deferred
+        // from mousedown so a shift+drag never leaves a dangling toggle).
+        // Plain clicks just focus the cell — the file picker now opens via
+        // double-click only. This means clicking around to bounce focus
+        // between cells (empty or populated) never accidentally pops the OS
+        // picker, and accidental rapid clicks can't queue up multiple.
+        if (drag.shift) {
+          dispatch({ type: 'SELECT_TOGGLE', id: drag.cellId });
+        } else if (cell && !drag.wasPrimary) {
+          dispatch({ type: 'SELECT', id: cell.id });
         }
       } else if (drag.kind === 'reposition') {
         if (
@@ -800,11 +853,11 @@ export function StageCanvas({ state, dispatch }: Props) {
             patch: { offsetX: drag.lastOffsetX, offsetY: drag.lastOffsetY },
           });
         }
-      } else if (drag.overId) {
-        const action: Action =
-          drag.kind === 'move'
-            ? { type: 'MOVE_CELL_TO_CELL', sourceId: drag.cellId, targetId: drag.overId }
-            : { type: 'SWAP_CELLS', aId: drag.cellId, bId: drag.overId };
+      } else if (drag.kind === 'swap' && drag.overId) {
+        // Shift+drag dropped on another cell → swap images only. Cell
+        // positions and spans stay where they are; this is a "replace"
+        // gesture, not a "move" gesture.
+        const action: Action = { type: 'SWAP_CELLS', aId: drag.cellId, bId: drag.overId };
         const startVT = (
           document as unknown as {
             startViewTransition?: (cb: () => void) => unknown;
@@ -812,31 +865,6 @@ export function StageCanvas({ state, dispatch }: Props) {
         ).startViewTransition;
         if (typeof startVT === 'function') startVT.call(document, () => dispatch(action));
         else dispatch(action);
-      } else if (drag.kind === 'move') {
-        // Shift+drag dropped on whitespace. Find the grid cell under the
-        // cursor and, if it's empty, snap the source to the largest empty
-        // rectangle anchored at that cell.
-        const board = wrapRef.current;
-        const rect = board?.getBoundingClientRect();
-        if (rect) {
-          const px = (drag.curX - rect.left) / (rect.width / dims.w);
-          const py = (drag.curY - rect.top) / (rect.height / dims.h);
-          const slot = pointToGridSlot(
-            px, py,
-            container.padding, container.gap, dims.w, dims.h,
-            grid, cellsRef.current,
-          );
-          if (slot) {
-            dispatch({
-              type: 'MOVE_CELL_TO_RECT',
-              id: drag.cellId,
-              colStart: slot.c,
-              rowStart: slot.r,
-              colSpan: slot.cs,
-              rowSpan: slot.rs,
-            });
-          }
-        }
       }
       dragRef.current = null;
       setGhost(null);
@@ -853,13 +881,20 @@ export function StageCanvas({ state, dispatch }: Props) {
   }, [dispatch]);
 
   const onStageMouseDown = (e: MouseEvent) => {
-    // Click anywhere in the stage that isn't a cell or a resize handle clears
-    // the selection. The dark area around the canvas counts; the stage-foot
-    // toolbar is outside this element so its buttons aren't affected.
+    // Click anywhere in the stage that isn't a cell, resize handle, or
+    // overlay element clears the selection.
     const t = e.target as HTMLElement;
-    if (t.closest('[data-cell-id]') || t.closest('[data-handle-dir]')) return;
+    if (
+      t.closest('[data-cell-id]') ||
+      t.closest('[data-handle-dir]') ||
+      t.closest('[data-watermark]')
+    ) {
+      return;
+    }
     if (e.button === 2) return; // right-click handled separately
     dispatch({ type: 'SELECT', id: null });
+    if (state.selectedTextLayerId) dispatch({ type: 'SELECT_TEXT_LAYER', id: null });
+    if (state.selectedWatermark) dispatch({ type: 'SELECT_WATERMARK', selected: false });
   };
 
   // ---- Right-click: open the context menu pinned to cursor ----------------
@@ -901,6 +936,14 @@ export function StageCanvas({ state, dispatch }: Props) {
 
         <div className="board-wrap">
           <div className="board-frame" style={{ width: dispW, height: dispH }}>
+            <UnclippedTextBand
+              band="behind-container"
+              state={state}
+              dispatch={dispatch}
+              dims={dims}
+              zoom={zoom}
+              zIndex={0}
+            />
             <div
               className="board"
               ref={wrapRef}
@@ -911,10 +954,6 @@ export function StageCanvas({ state, dispatch }: Props) {
                 transformOrigin: 'top left',
                 background: bg,
                 ...shapeStyle,
-                boxShadow:
-                  container.borderWidth > 0
-                    ? `0 0 0 ${container.borderWidth}px ${container.borderColor} inset`
-                    : 'none',
               }}
             >
               {container.bgImage?.previewUrl && (
@@ -929,9 +968,36 @@ export function StageCanvas({ state, dispatch }: Props) {
                     height: '100%',
                     objectFit: container.bgImageFit === 'fill' ? 'fill' : container.bgImageFit,
                     pointerEvents: 'none',
+                    filter:
+                      (container.bgBlur ?? 0) > 0
+                        ? `blur(${container.bgBlur}px)`
+                        : undefined,
                   }}
                 />
               )}
+              {(container.bgOverlayOpacity ?? 0) > 0 && (
+                <div
+                  aria-hidden
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    background: container.bgOverlayColor ?? '#000000',
+                    opacity: container.bgOverlayOpacity,
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
+              {/* Behind-cells text paints BEFORE the cells in DOM order so it
+                  ends up underneath them in the stacking context. (z-index
+                  alone wouldn't do this — selected cells set z-index:3 to
+                  pop above siblings, which would float above any positive
+                  z-index we put here.) */}
+              <TextLayersBand
+                band="behind-cells"
+                state={state}
+                dispatch={dispatch}
+                dims={dims}
+              />
               <div className="grid-area">
                 {(() => {
                   const innerW = dims.w - container.padding * 2 - container.gap * (grid.cols - 1);
@@ -967,6 +1033,39 @@ export function StageCanvas({ state, dispatch }: Props) {
                   });
                 })()}
               </div>
+              <TextLayersBand
+                band="in-front-of-cells"
+                state={state}
+                dispatch={dispatch}
+                dims={dims}
+                zIndex={5}
+              />
+              <WatermarkOverlay
+                watermark={container.watermark}
+                dims={dims}
+                dispatch={dispatch}
+                selected={state.selectedWatermark === true}
+              />
+              {/* Border overlay. Putting the inset shadow on `.board` itself
+                  doesn't work — children that fill the board (bg image, bg
+                  overlay, cells) paint over the inset shadow. Drawing it as
+                  the LAST child of `.board` puts it on top, and reusing the
+                  container `shapeStyle` clips the rectangular shadow ring to
+                  the actual silhouette so the stroke follows the shape
+                  outline (matching the backend's stroke_container). */}
+              {container.borderWidth > 0 && (
+                <div
+                  aria-hidden
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                    ...shapeStyle,
+                    boxShadow: `0 0 0 ${container.borderWidth}px ${container.borderColor} inset`,
+                    zIndex: 8,
+                  }}
+                />
+              )}
               <ResizeHandles
                 cell={cells.find((c) => c.id === primarySelectedId)}
                 grid={grid}
@@ -1016,6 +1115,14 @@ export function StageCanvas({ state, dispatch }: Props) {
                 </div>
               )}
             </div>
+            <UnclippedTextBand
+              band="in-front-of-container"
+              state={state}
+              dispatch={dispatch}
+              dims={dims}
+              zoom={zoom}
+              zIndex={50}
+            />
           </div>
         </div>
       </div>
@@ -1043,6 +1150,7 @@ export function StageCanvas({ state, dispatch }: Props) {
             cells,
             dispatch,
             onUpload: uploadToCell,
+            clipboardStyle,
           })}
         />
       )}
@@ -1095,7 +1203,7 @@ export function StageCanvas({ state, dispatch }: Props) {
         </span>
         <span className="ml-auto" />
         <span style={{ color: 'var(--text-4)' }}>
-          Click empty · Drag inside selected to position · Shift-drag to swap cells
+          Click empty · Drag to reposition · Shift-click to multi-select · Shift-drag to swap images
         </span>
       </div>
     </div>
@@ -1354,19 +1462,36 @@ function buildContextMenu({
   cells,
   dispatch,
   onUpload,
+  clipboardStyle,
 }: {
   cellId: string;
   selectedIds: string[];
   cells: Cell[];
   dispatch: (a: Action) => void;
   onUpload: (id: string) => void;
+  clipboardStyle: CellStyle | null;
 }): ContextMenuItem[] {
   const cell = cells.find((c) => c.id === cellId);
   if (!cell) return [];
   const multi = selectedIds.length >= 2 && selectedIds.includes(cellId);
 
+  // Apply the captured style buffer to one or more cells. The buffer
+  // intentionally excludes image, position, and span — paste keeps each
+  // target's content and only swaps the look. We read the clipboard
+  // directly here (instead of the React-state mirror) so a re-render that
+  // hasn't flushed yet can't make us paste a stale or empty buffer.
+  const applyStyle = (ids: string[]) => {
+    const s = StyleClipboard.peek();
+    if (!s || ids.length === 0) return;
+    if (ids.length === 1) {
+      dispatch({ type: 'UPDATE_CELL', id: ids[0], patch: { ...s } });
+    } else {
+      dispatch({ type: 'UPDATE_CELLS', ids, patch: { ...s } });
+    }
+  };
+
   if (multi) {
-    return [
+    const items: ContextMenuItem[] = [
       {
         id: 'merge',
         label: `Merge ${selectedIds.length} cells`,
@@ -1382,6 +1507,23 @@ function buildContextMenu({
       },
       { id: 'div1', divider: true },
       {
+        id: 'copy-style',
+        label: 'Copy style (from primary)',
+        icon: <ClipboardCopy size={14} />,
+        onSelect: () => StyleClipboard.copy(cell),
+      },
+    ];
+    if (clipboardStyle) {
+      items.push({
+        id: 'paste-style',
+        label: `Paste style to ${selectedIds.length} cells`,
+        icon: <ClipboardPaste size={14} />,
+        onSelect: () => applyStyle(selectedIds),
+      });
+    }
+    items.push(
+      { id: 'div2', divider: true },
+      {
         id: 'delete-all',
         label: `Delete ${selectedIds.length} cells`,
         icon: <Trash2 size={14} />,
@@ -1393,10 +1535,11 @@ function buildContextMenu({
           }
         },
       },
-    ];
+    );
+    return items;
   }
 
-  return [
+  const items: ContextMenuItem[] = [
     {
       id: 'upload',
       label: cell.image ? 'Replace image…' : 'Upload image…',
@@ -1404,6 +1547,23 @@ function buildContextMenu({
       onSelect: () => onUpload(cellId),
     },
     { id: 'div0', divider: true },
+    {
+      id: 'copy-style',
+      label: 'Copy style',
+      icon: <ClipboardCopy size={14} />,
+      onSelect: () => StyleClipboard.copy(cell),
+    },
+  ];
+  if (clipboardStyle) {
+    items.push({
+      id: 'paste-style',
+      label: 'Paste style',
+      icon: <ClipboardPaste size={14} />,
+      onSelect: () => applyStyle([cellId]),
+    });
+  }
+  items.push(
+    { id: 'div1', divider: true },
     {
       id: 'split-rows',
       label: 'Split into 2 rows',
@@ -1416,7 +1576,7 @@ function buildContextMenu({
       icon: <Columns size={14} />,
       onSelect: () => dispatch({ type: 'SPLIT_CELL', id: cellId, axis: 'col', count: 2 }),
     },
-    { id: 'div1', divider: true },
+    { id: 'div2', divider: true },
     {
       id: 'delete',
       label: 'Delete cell',
@@ -1425,5 +1585,247 @@ function buildContextMenu({
       danger: true,
       onSelect: () => dispatch({ type: 'REMOVE_CELL', id: cellId }),
     },
-  ];
+  );
+  return items;
+}
+
+interface WatermarkOverlayProps {
+  watermark: Watermark | undefined;
+  dims: { w: number; h: number };
+  dispatch: (a: Action) => void;
+  selected: boolean;
+}
+
+/** Watermark layer: text or image, positioned/scaled in design pixels so it
+ *  matches the backend Pillow output 1:1. Lives inside `.board` so it inherits
+ *  the container clip. Mouse-draggable, mouse-clickable (selects → Inspector
+ *  pivots to Container tab). */
+function WatermarkOverlay({ watermark, dims, dispatch, selected }: WatermarkOverlayProps) {
+  const onDragStart = useDispatchedFractionDrag(dims, (x, y) => {
+    dispatch({ type: 'SET_WATERMARK', patch: { x, y } });
+  });
+  if (!watermark || !watermark.enabled) return null;
+  const px = watermark.x * dims.w;
+  const py = watermark.y * dims.h;
+  const transform = `translate(-50%, -50%) rotate(${watermark.angle}deg)`;
+  const onMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    dispatch({ type: 'SELECT_WATERMARK', selected: true });
+    onDragStart(e);
+  };
+  const common: CSSProperties = {
+    position: 'absolute',
+    left: px,
+    top: py,
+    transform,
+    transformOrigin: 'center center',
+    opacity: watermark.opacity,
+    cursor: 'move',
+    zIndex: 6,
+    userSelect: 'none',
+    outline: selected ? '1px dashed var(--focus)' : 'none',
+    outlineOffset: 4,
+  };
+  if (watermark.kind === 'text') {
+    return (
+      <div
+        data-watermark="1"
+        onMouseDown={onMouseDown}
+        style={{
+          ...common,
+          color: watermark.color,
+          fontFamily: watermark.font,
+          fontSize: watermark.sizePx,
+          fontWeight: watermark.weight,
+          whiteSpace: 'nowrap',
+          letterSpacing: '-0.01em',
+          textShadow: '0 1px 2px rgba(0,0,0,0.25)',
+        }}
+      >
+        {watermark.text}
+      </div>
+    );
+  }
+  if (!watermark.image?.previewUrl) return null;
+  return (
+    <img
+      data-watermark="1"
+      onMouseDown={onMouseDown}
+      src={watermark.image.previewUrl}
+      alt=""
+      draggable={false}
+      style={{
+        ...common,
+        width: watermark.sizePx,
+        height: 'auto',
+      }}
+    />
+  );
+}
+
+/** Returns a mousedown handler that, when dragged, calls `commit` with the
+ *  cursor's position translated into 0..1 fractions of the design canvas.
+ *  The board element is read fresh on each drag so a zoom change doesn't
+ *  invalidate the conversion. */
+function useDispatchedFractionDrag(
+  dims: { w: number; h: number },
+  commit: (x: number, y: number) => void,
+): (e: MouseEvent) => void {
+  return useCallback(
+    (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const target = e.currentTarget as HTMLElement;
+      const board = target.closest('.board') as HTMLElement | null;
+      const frame = target.closest('.board-frame') as HTMLElement | null;
+      const host = board ?? frame;
+      if (!host) return;
+      const rect = host.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const sx = dims.w / rect.width;
+      const sy = dims.h / rect.height;
+      const onMove = (ev: globalThis.MouseEvent) => {
+        const px = (ev.clientX - rect.left) * sx;
+        const py = (ev.clientY - rect.top) * sy;
+        commit(
+          Math.max(-0.2, Math.min(1.2, px / dims.w)),
+          Math.max(-0.2, Math.min(1.2, py / dims.h)),
+        );
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [dims.w, dims.h, commit],
+  );
+}
+
+interface TextBandProps {
+  band: TextLayerZ;
+  state: PhotoGridState;
+  dispatch: (a: Action) => void;
+  dims: { w: number; h: number };
+  /** z-index inside .board (only used by clipped bands). */
+  zIndex?: number;
+}
+
+/** Renders the slice of `state.textLayers` whose z-band matches `band`. Clipped
+ *  bands (`behind-cells` / `in-front-of-cells`) live inside `.board` and so
+ *  share the container shape clip. Unclipped bands use `<UnclippedTextBand>`. */
+function TextLayersBand({ band, state, dispatch, dims, zIndex = 0 }: TextBandProps) {
+  const layers = (state.textLayers ?? []).filter((l) => l.z === band);
+  if (layers.length === 0) return null;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        zIndex,
+        pointerEvents: 'none',
+      }}
+    >
+      {layers.map((l) => (
+        <TextLayerView
+          key={l.id}
+          layer={l}
+          dims={dims}
+          selected={state.selectedTextLayerId === l.id}
+          dispatch={dispatch}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface UnclippedTextBandProps extends TextBandProps {
+  zoom: number;
+}
+
+/** Same content as TextLayersBand, but mounted as a sibling of `.board` so it
+ *  isn't clipped by the container shape. Has its own scale transform that
+ *  matches `.board`'s, so design-pixel coords still resolve to the right
+ *  on-screen pixels. */
+function UnclippedTextBand({ band, state, dispatch, dims, zoom, zIndex = 0 }: UnclippedTextBandProps) {
+  const layers = (state.textLayers ?? []).filter((l) => l.z === band);
+  if (layers.length === 0) return null;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: dims.w,
+        height: dims.h,
+        transform: `scale(${zoom})`,
+        transformOrigin: 'top left',
+        zIndex,
+        pointerEvents: 'none',
+      }}
+    >
+      {layers.map((l) => (
+        <TextLayerView
+          key={l.id}
+          layer={l}
+          dims={dims}
+          selected={state.selectedTextLayerId === l.id}
+          dispatch={dispatch}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface TextLayerViewProps {
+  layer: TextLayer;
+  dims: { w: number; h: number };
+  selected: boolean;
+  dispatch: (a: Action) => void;
+}
+
+function TextLayerView({ layer, dims, selected, dispatch }: TextLayerViewProps) {
+  const onDragStart = useDispatchedFractionDrag(dims, (x, y) => {
+    dispatch({ type: 'UPDATE_TEXT_LAYER', id: layer.id, patch: { x, y } });
+  });
+  const px = layer.x * dims.w;
+  const py = layer.y * dims.h;
+  const anchorX = layer.align === 'left' ? '0%' : layer.align === 'right' ? '-100%' : '-50%';
+  const transform = `translate(${anchorX}, -50%) rotate(${layer.rotation}deg)`;
+  return (
+    <div
+      onMouseDown={(e) => {
+        // Clicking always selects the layer; drag-then-release also commits
+        // the new position via the fraction drag helper.
+        dispatch({ type: 'SELECT_TEXT_LAYER', id: layer.id });
+        onDragStart(e);
+      }}
+      style={{
+        position: 'absolute',
+        left: px,
+        top: py,
+        transform,
+        transformOrigin: layer.align === 'left'
+          ? 'left center'
+          : layer.align === 'right'
+            ? 'right center'
+            : 'center center',
+        color: layer.color,
+        fontFamily: layer.font,
+        fontSize: layer.size,
+        fontWeight: layer.weight,
+        opacity: layer.opacity,
+        whiteSpace: 'pre',
+        textAlign: layer.align,
+        pointerEvents: 'auto',
+        cursor: 'move',
+        outline: selected ? '1px dashed var(--focus)' : 'none',
+        outlineOffset: 2,
+        userSelect: 'none',
+      }}
+    >
+      {layer.text || ' '}
+    </div>
+  );
 }

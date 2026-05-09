@@ -15,6 +15,7 @@ from ..models import Cell, PhotoGridState
 from .cells import compose_cell
 from .filters import apply_css_filter
 from .layout import cell_box, dimensions_for, grid_tracks
+from .overlays import composite_text_layer, composite_watermark
 from .shapes import make_cell_mask, make_container_mask, stroke_cell, stroke_container
 
 try:  # HEIC support
@@ -73,6 +74,11 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
 
     log.info("render.start", w=W, h=H, format=out.format, scale=scale, cells=len(state.cells))
 
+    text_layers = state.textLayers or []
+    # `base` accumulates everything that should be clipped by the container
+    # shape: bg, cells, behind/in-front-of-cells text, watermark. After the
+    # container clip is applied, we composite the unclipped bands (behind /
+    # in-front-of-container) so they extend beyond the silhouette.
     base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
     # Container background (clipped later by container mask).
@@ -87,9 +93,31 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
                     bgi.load()
                     bg_rgba = bgi.convert("RGBA")
                 bg_tile = _fit_image(bg_rgba, W, H, cont.bgImageFit)
+                if cont.bgBlur and cont.bgBlur > 0:
+                    from PIL import ImageFilter
+
+                    bg_tile = bg_tile.filter(
+                        ImageFilter.GaussianBlur(radius=cont.bgBlur * scale)
+                    )
                 base.alpha_composite(bg_tile)
             except Exception as e:
                 log.warning("bgimage.failed", error=str(e))
+
+    # Optional flat-color overlay between bg and cells. Applied after bg color
+    # / bg image so it tints them, but before cells so cell pixels stay sharp.
+    if cont.bgOverlayOpacity and cont.bgOverlayOpacity > 0:
+        overlay = Image.new(
+            "RGBA",
+            (W, H),
+            _hex_to_rgba(cont.bgOverlayColor, cont.bgOverlayOpacity),
+        )
+        base.alpha_composite(overlay)
+
+    # Behind-cells text layers paint inside the container clip but underneath
+    # the cells themselves.
+    for layer in text_layers:
+        if layer.z == "behind-cells":
+            composite_text_layer(base, layer, scale)
 
     # Layout in scaled-pixel space.
     tracks = grid_tracks(
@@ -148,6 +176,13 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
                 color=cell.cellBorderColor,
             )
 
+    # Layers painted on top of the cells but still INSIDE the container clip:
+    # `in-front-of-cells` text + the watermark.
+    for layer in text_layers:
+        if layer.z == "in-front-of-cells":
+            composite_text_layer(base, layer, scale)
+    composite_watermark(base, cont.watermark, scale)
+
     # Apply container shape mask globally. ``cont.cornerRadius`` is design px;
     # the mask is built in output px so we scale up.
     container_radius_out = cont.cornerRadius * scale
@@ -162,6 +197,23 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             width=cont.borderWidth * scale,
             color=cont.borderColor,
         )
+
+    # Outside-the-clip layers. Paint behind-container under everything we've
+    # built so far, then in-front-of-container on top of the lot. These extend
+    # past the container silhouette.
+    has_unclipped = any(
+        layer.z in ("behind-container", "in-front-of-container") for layer in text_layers
+    )
+    if has_unclipped:
+        outside_back = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        for layer in text_layers:
+            if layer.z == "behind-container":
+                composite_text_layer(outside_back, layer, scale)
+        outside_back.alpha_composite(base)
+        base = outside_back
+        for layer in text_layers:
+            if layer.z == "in-front-of-container":
+                composite_text_layer(base, layer, scale)
 
     return _encode(base, out.format, out.quality)
 
@@ -215,15 +267,26 @@ def _apply_alpha(base: Image.Image, mask: Image.Image) -> Image.Image:
     return Image.merge("RGBA", (r, g, b, Image.fromarray(combined, mode="L")))
 
 
-def _hex_to_rgba(hex_str: str) -> tuple[int, int, int, int]:
+def _hex_to_rgba(hex_str: str, alpha: float | None = None) -> tuple[int, int, int, int]:
+    """Parse `#RGB`, `#RRGGBB`, or `#RRGGBBAA`. When `alpha` is supplied
+    (0..1), it overrides any alpha channel parsed from the hex string."""
     s = hex_str.lstrip("#")
     if len(s) == 3:
         s = "".join(ch * 2 for ch in s)
     if len(s) == 6:
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), 255)
-    if len(s) == 8:
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), int(s[6:8], 16))
-    return (255, 255, 255, 255)
+        r, g, b, a = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), 255
+    elif len(s) == 8:
+        r, g, b, a = (
+            int(s[0:2], 16),
+            int(s[2:4], 16),
+            int(s[4:6], 16),
+            int(s[6:8], 16),
+        )
+    else:
+        r, g, b, a = 255, 255, 255, 255
+    if alpha is not None:
+        a = max(0, min(255, int(round(alpha * 255))))
+    return r, g, b, a
 
 
 def _encode(img: Image.Image, fmt: str, quality: float) -> tuple[bytes, str]:

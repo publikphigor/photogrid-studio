@@ -47,6 +47,23 @@ class Cell(BaseModel):
     dh: float = 0
 
 
+class Watermark(BaseModel):
+    enabled: bool = False
+    kind: Literal["text", "image"] = "text"
+    text: str = ""
+    font: str = "Helvetica, Arial, sans-serif"
+    weight: int = 600
+    image: CellImage | None = None
+    # x / y are normalized fractions of the container; sizePx is in design
+    # pixels (multiplied by output.scale at render time).
+    x: float = 0.5
+    y: float = 0.95
+    sizePx: float = 64.0
+    opacity: float = 0.6
+    angle: float = 0
+    color: str = "#ffffff"
+
+
 class Container(BaseModel):
     shape: ShapeId = "rect"
     cornerRadius: float = 12  # design-px corner radius (multiplied by output.scale on render)
@@ -55,10 +72,39 @@ class Container(BaseModel):
     bgTransparent: bool = False
     bgImage: CellImage | None = None
     bgImageFit: FitMode = "cover"
+    # Optional bg-image blur (design pixels) and a flat-color overlay between
+    # bg and cells. Both default to no-op so legacy state stays unchanged.
+    bgBlur: float = 0
+    bgOverlayColor: str = "#000000"
+    bgOverlayOpacity: float = 0
     padding: float = 16
     gap: float = 8
     borderWidth: float = 0
     borderColor: str = "#0a0a0a"
+    watermark: Watermark | None = None
+
+
+TextLayerZ = Literal[
+    "behind-container",
+    "behind-cells",
+    "in-front-of-cells",
+    "in-front-of-container",
+]
+
+
+class TextLayer(BaseModel):
+    id: str
+    text: str = ""
+    font: str = "Helvetica, Arial, sans-serif"
+    size: float = 24
+    color: str = "#ffffff"
+    x: float = 0.5
+    y: float = 0.5
+    rotation: float = 0
+    opacity: float = 1.0
+    weight: int = 600
+    align: Literal["left", "center", "right"] = "center"
+    z: TextLayerZ = "in-front-of-cells"
 
 
 class Grid(BaseModel):
@@ -80,6 +126,7 @@ class PhotoGridState(BaseModel):
     grid: Grid
     cells: list[Cell]
     output: Output
+    textLayers: list[TextLayer] = []
 
 
 class ExportRequest(BaseModel):

@@ -143,13 +143,25 @@ export async function exportImage(
 
 /** State sent to the backend never includes the local-only previewUrl. */
 function stripPreviewUrls(state: PhotoGridState): PhotoGridState {
+  const stripImage = <T extends { previewUrl?: string }>(img: T): T =>
+    ({ ...img, previewUrl: undefined } as T);
   return {
     ...state,
     cells: state.cells.map((c) =>
-      c.image
-        ? { ...c, image: { ...c.image, previewUrl: undefined } }
-        : c,
+      c.image ? { ...c, image: stripImage(c.image) } : c,
     ),
+    container: {
+      ...state.container,
+      bgImage: state.container.bgImage ? stripImage(state.container.bgImage) : null,
+      watermark: state.container.watermark
+        ? {
+            ...state.container.watermark,
+            image: state.container.watermark.image
+              ? stripImage(state.container.watermark.image)
+              : null,
+          }
+        : undefined,
+    },
   };
 }
 

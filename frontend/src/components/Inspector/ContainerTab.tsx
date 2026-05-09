@@ -6,6 +6,7 @@ import type {
   GridConfig,
   PhotoGridState,
   ShapeId,
+  Watermark,
 } from '@/types';
 import { ASPECT_RATIOS } from '@/state/presets';
 import { SHAPES } from '@/state/shapes';
@@ -14,6 +15,18 @@ import { Seg } from '@/components/controls/Seg';
 import { ColorField } from '@/components/controls/ColorField';
 import { Check } from '@/components/controls/Check';
 import { ingestFile } from '@/api/client';
+import { DEFAULT_WATERMARK } from '@/state/reducer';
+
+/** Fonts whose CSS family name has a real-or-fallback TTF on the backend
+ *  container. Keep aligned with `_FONT_HINTS` in `backend/.../overlays.py`. */
+const WATERMARK_FONT_CHOICES: { value: string; label: string }[] = [
+  { value: 'Helvetica, Arial, sans-serif', label: 'Helvetica' },
+  { value: 'Georgia, "Times New Roman", serif', label: 'Georgia' },
+  { value: '"Courier New", Courier, monospace', label: 'Courier' },
+  { value: '"Comic Sans MS", "Chalkboard SE", cursive', label: 'Comic' },
+  { value: 'Impact, Charcoal, sans-serif', label: 'Impact' },
+  { value: '"Trebuchet MS", sans-serif', label: 'Trebuchet' },
+];
 
 interface Props {
   state: PhotoGridState;
@@ -196,6 +209,34 @@ export function ContainerTab({ state, dispatch }: Props) {
             />
           </div>
         )}
+        <div className="row">
+          <label>Blur</label>
+          <Slider
+            value={c.bgBlur ?? 0}
+            min={0}
+            max={60}
+            step={0.5}
+            onChange={(v) => set({ bgBlur: v })}
+            suffix="px"
+          />
+        </div>
+        <div className="row">
+          <label>Overlay</label>
+          <ColorField
+            value={c.bgOverlayColor ?? '#000000'}
+            onChange={(v) => set({ bgOverlayColor: v })}
+          />
+        </div>
+        <div className="row">
+          <label>Tint</label>
+          <Slider
+            value={Math.round((c.bgOverlayOpacity ?? 0) * 100)}
+            min={0}
+            max={100}
+            onChange={(v) => set({ bgOverlayOpacity: v / 100 })}
+            suffix="%"
+          />
+        </div>
       </div>
 
       <div className="section">
@@ -209,6 +250,205 @@ export function ContainerTab({ state, dispatch }: Props) {
           <ColorField value={c.borderColor} onChange={(v) => set({ borderColor: v })} />
         </div>
       </div>
+
+      <WatermarkSection state={state} dispatch={dispatch} />
     </>
+  );
+}
+
+function WatermarkSection({ state, dispatch }: Props) {
+  const w = state.container.watermark ?? DEFAULT_WATERMARK;
+  const setW = (patch: Partial<Watermark>) => dispatch({ type: 'SET_WATERMARK', patch });
+
+  const pickWatermarkImage = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      try {
+        const img = await ingestFile(f);
+        setW({ image: img, kind: 'image' });
+      } catch (e) {
+        console.error('watermark upload failed', e);
+      }
+    };
+    input.click();
+  };
+
+  return (
+    <div className="section">
+      <h4 className="section-title">Watermark</h4>
+      <Check checked={w.enabled} onChange={(v) => setW({ enabled: v })}>
+        Enable watermark
+      </Check>
+      {w.enabled && (
+        <>
+          <div className="row" style={{ marginTop: 8 }}>
+            <label>Type</label>
+            <Seg
+              options={[
+                { value: 'text', label: 'Text' },
+                { value: 'image', label: 'Image' },
+              ]}
+              value={w.kind}
+              onChange={(v) => setW({ kind: v as Watermark['kind'] })}
+            />
+          </div>
+          {w.kind === 'text' ? (
+            <>
+              <div className="row-stack">
+                <label>Text</label>
+                <input
+                  className="field"
+                  type="text"
+                  value={w.text}
+                  onChange={(e) => setW({ text: e.target.value })}
+                  placeholder="© Photogrid"
+                  style={{ height: 28 }}
+                />
+              </div>
+              <div className="row-stack">
+                <label>Font</label>
+                <select
+                  className="num-input"
+                  style={{ height: 28, width: '100%', textAlign: 'left', padding: '0 8px' }}
+                  value={w.font}
+                  onChange={(e) => setW({ font: e.target.value })}
+                >
+                  {WATERMARK_FONT_CHOICES.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="row">
+                <label>Weight</label>
+                <Slider
+                  value={w.weight}
+                  min={100}
+                  max={900}
+                  step={100}
+                  onChange={(v) => setW({ weight: v })}
+                />
+              </div>
+              <div className="row">
+                <label>Color</label>
+                <ColorField value={w.color} onChange={(v) => setW({ color: v })} />
+              </div>
+            </>
+          ) : (
+            <div className="row-stack">
+              <label>Image</label>
+              {w.image ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  <button
+                    className="field"
+                    onClick={pickWatermarkImage}
+                    title="Click to replace"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    {w.image.previewUrl && (
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 18,
+                          height: 18,
+                          borderRadius: 3,
+                          backgroundImage: `url(${w.image.previewUrl})`,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                          flexShrink: 0,
+                          boxShadow: 'inset 0 0 0 1px var(--line)',
+                        }}
+                      />
+                    )}
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {w.image.name}
+                    </span>
+                  </button>
+                  <button
+                    className="btn ghost"
+                    style={{ height: 28, padding: '0 8px' }}
+                    onClick={() => setW({ image: null })}
+                    title="Remove watermark image"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : (
+                <button className="btn" style={{ width: '100%' }} onClick={pickWatermarkImage}>
+                  <ImageIcon size={14} /> Upload watermark…
+                </button>
+              )}
+            </div>
+          )}
+          <div className="row">
+            <label>X</label>
+            <Slider
+              value={Math.round(w.x * 100)}
+              min={0}
+              max={100}
+              onChange={(v) => setW({ x: v / 100 })}
+              suffix="%"
+            />
+          </div>
+          <div className="row">
+            <label>Y</label>
+            <Slider
+              value={Math.round(w.y * 100)}
+              min={0}
+              max={100}
+              onChange={(v) => setW({ y: v / 100 })}
+              suffix="%"
+            />
+          </div>
+          <div className="row">
+            <label>Size</label>
+            <Slider
+              value={w.sizePx}
+              min={6}
+              max={600}
+              onChange={(v) => setW({ sizePx: v })}
+              suffix="px"
+            />
+          </div>
+          <div className="row">
+            <label>Opacity</label>
+            <Slider
+              value={Math.round(w.opacity * 100)}
+              min={0}
+              max={100}
+              onChange={(v) => setW({ opacity: v / 100 })}
+              suffix="%"
+            />
+          </div>
+          <div className="row">
+            <label>Angle</label>
+            <Slider
+              value={Math.round(w.angle)}
+              min={-180}
+              max={180}
+              onChange={(v) => setW({ angle: v })}
+              suffix="°"
+            />
+          </div>
+        </>
+      )}
+    </div>
   );
 }

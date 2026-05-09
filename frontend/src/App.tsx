@@ -115,7 +115,10 @@ export function App() {
         e.preventDefault();
         dispatch({ type: 'REDO' });
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (state.selectedCellIds.length) {
+        if (state.selectedTextLayerId) {
+          e.preventDefault();
+          dispatch({ type: 'REMOVE_TEXT_LAYER', id: state.selectedTextLayerId });
+        } else if (state.selectedCellIds.length) {
           e.preventDefault();
           // Remove every selected cell. Iterate in reverse so removals don't
           // change the indexes of pending ids (REMOVE_CELL works by id, not
@@ -131,7 +134,13 @@ export function App() {
         e.preventDefault();
         void handleExport();
       } else if (e.key === 'Escape') {
-        if (state.selectedCellIds.length) {
+        if (state.selectedTextLayerId) {
+          e.preventDefault();
+          dispatch({ type: 'SELECT_TEXT_LAYER', id: null });
+        } else if (state.selectedWatermark) {
+          e.preventDefault();
+          dispatch({ type: 'SELECT_WATERMARK', selected: false });
+        } else if (state.selectedCellIds.length) {
           e.preventDefault();
           dispatch({ type: 'SELECT', id: null });
         }
@@ -139,7 +148,13 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [state.selectedCellIds, handleExport, dispatch]);
+  }, [
+    state.selectedCellIds,
+    state.selectedTextLayerId,
+    state.selectedWatermark,
+    handleExport,
+    dispatch,
+  ]);
 
   return (
     <div className="grid h-full" style={{ gridTemplateRows: '48px 1fr' }}>

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Plus, Save, Shuffle, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Plus, Save, Shuffle, Trash2, Type } from 'lucide-react';
 import type { Action, CellImageRef, PhotoGridState } from '@/types';
 import { LAYOUT_PRESETS } from '@/state/presets';
 import { Templates, type SavedTemplate } from '@/state/templates';
@@ -19,9 +19,10 @@ const MAX_RAND_CELLS = 200;
 
 export function LeftPanel({ state, dispatch }: Props) {
   const [saved, setSaved] = useState<SavedTemplate[]>([]);
-  const [randRaw, setRandRaw] = useState('5');
+  const [randRaw, setRandRaw] = useState(() => String(Math.max(1, state.cells.length)));
   const [mode, setMode] = useState<ShuffleMode>('random');
   const [saveOpen, setSaveOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<SavedTemplate | null>(null);
   const randCount = useMemo(() => {
     const n = Number.parseInt(randRaw, 10);
     if (!Number.isFinite(n)) return 1;
@@ -31,6 +32,14 @@ export function LeftPanel({ state, dispatch }: Props) {
   useEffect(() => {
     setSaved(Templates.list());
   }, []);
+
+  // Keep the shuffle count in lockstep with the live cell count: as cells are
+  // added or removed elsewhere, the input reflects the new total so the next
+  // shuffle preserves the same density by default. The user can still type a
+  // custom value — it will get overwritten the next time cells.length changes.
+  useEffect(() => {
+    setRandRaw(String(Math.max(1, state.cells.length)));
+  }, [state.cells.length]);
 
   const onShuffle = () => {
     dispatch({
@@ -71,13 +80,31 @@ export function LeftPanel({ state, dispatch }: Props) {
         }),
       );
     }
+    const wmImg = tpl.state.container.watermark?.image;
+    if (wmImg?.hash && !wmImg.previewUrl) {
+      tasks.push(
+        imageBlobUrl(wmImg.hash).then((url) => {
+          if (!url) return;
+          dispatch({
+            type: 'SET_WATERMARK',
+            patch: { image: { ...wmImg, previewUrl: url } },
+          });
+        }),
+      );
+    }
     await Promise.allSettled(tasks);
   };
 
-  const onDeleteTemplate = (e: React.MouseEvent, id: string) => {
+  const onRequestDelete = (e: React.MouseEvent, tpl: SavedTemplate) => {
     e.stopPropagation();
-    Templates.remove(id);
+    setPendingDelete(tpl);
+  };
+
+  const confirmDelete = () => {
+    if (!pendingDelete) return;
+    Templates.remove(pendingDelete.id);
     setSaved(Templates.list());
+    setPendingDelete(null);
   };
 
   return (
@@ -198,36 +225,30 @@ export function LeftPanel({ state, dispatch }: Props) {
         ) : (
           <div className="px-2 pb-3 pt-1.5">
             {saved.map((t) => (
-              <div
+              <TemplateRow
                 key={t.id}
-                className="layer"
-                onClick={() => onApplyTemplate(t)}
-                title={`Saved ${new Date(t.createdAt).toLocaleString()}`}
-              >
-                <div className="thumb" style={{ display: 'grid', placeItems: 'center' }}>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--text-3)' }}>
-                    {t.state.cells.length}
-                  </span>
-                </div>
-                <div className="name">{t.name}</div>
-                <div className="meta">
-                  {t.state.grid.cols}×{t.state.grid.rows}
-                </div>
-                <button
-                  className="icon-btn"
-                  style={{ width: 20, height: 20 }}
-                  onClick={(e) => onDeleteTemplate(e, t.id)}
-                  title="Delete template"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
+                template={t}
+                onApply={() => onApplyTemplate(t)}
+                onDelete={(e) => onRequestDelete(e, t)}
+                onRename={(name) => {
+                  Templates.rename(t.id, name);
+                  setSaved(Templates.list());
+                }}
+              />
             ))}
           </div>
         )}
         <div className="pane-header" style={{ marginTop: 4 }}>
           Layers
           <div style={{ flex: 1 }} />
+          <button
+            className="icon-btn"
+            style={{ width: 22, height: 22 }}
+            onClick={() => dispatch({ type: 'ADD_TEXT_LAYER' })}
+            title="Add text layer"
+          >
+            <Type size={13} />
+          </button>
           <button
             className="icon-btn"
             style={{ width: 22, height: 22 }}
@@ -238,13 +259,31 @@ export function LeftPanel({ state, dispatch }: Props) {
           </button>
         </div>
         <div className="px-2 pb-3 pt-1.5">
+          {(state.textLayers ?? []).map((t) => (
+            <div
+              key={t.id}
+              className={`layer${state.selectedTextLayerId === t.id ? ' active' : ''}`}
+              onClick={() => dispatch({ type: 'SELECT_TEXT_LAYER', id: t.id })}
+              title={`Text · ${zShortLabel(t.z)}`}
+            >
+              <div
+                className="thumb"
+                style={{ display: 'grid', placeItems: 'center', background: 'var(--panel-3)' }}
+              >
+                <Type size={12} style={{ opacity: 0.7 }} />
+              </div>
+              <div className="name">{t.text || '(empty)'}</div>
+              <div className="meta">{zShortLabel(t.z)}</div>
+              <span className="dot" />
+            </div>
+          ))}
           {state.cells.map((c, i) => (
             <div
               key={c.id}
               className={`layer${state.selectedCellIds.includes(c.id) ? ' active' : ''}`}
               onClick={(e) =>
                 dispatch(
-                  e.metaKey || e.ctrlKey
+                  e.shiftKey
                     ? { type: 'SELECT_TOGGLE', id: c.id }
                     : { type: 'SELECT', id: c.id },
                 )
@@ -274,6 +313,31 @@ export function LeftPanel({ state, dispatch }: Props) {
           setSaveOpen(false);
         }}
       />
+
+      <Modal
+        open={pendingDelete !== null}
+        onClose={() => setPendingDelete(null)}
+        title="Delete template"
+        footer={
+          <>
+            <button className="btn ghost" onClick={() => setPendingDelete(null)}>
+              Cancel
+            </button>
+            <button
+              className="btn primary"
+              style={{ background: 'var(--danger)', color: '#fff' }}
+              onClick={confirmDelete}
+              data-autofocus
+            >
+              Delete
+            </button>
+          </>
+        }
+      >
+        <p style={{ margin: 0, lineHeight: 1.55 }}>
+          Delete <strong>{pendingDelete?.name}</strong>? This can't be undone.
+        </p>
+      </Modal>
     </div>
   );
 }
@@ -350,5 +414,121 @@ function SaveTemplateModal({
         </p>
       </div>
     </Modal>
+  );
+}
+
+function zShortLabel(z: import('@/types').TextLayerZ): string {
+  switch (z) {
+    case 'behind-container':
+      return 'bg';
+    case 'behind-cells':
+      return 'bhd';
+    case 'in-front-of-cells':
+      return 'fwd';
+    case 'in-front-of-container':
+      return 'top';
+  }
+}
+
+interface TemplateRowProps {
+  template: SavedTemplate;
+  onApply: () => void;
+  onDelete: (e: React.MouseEvent) => void;
+  onRename: (name: string) => void;
+}
+
+/** A single row in the My Templates list. Single-click applies the template;
+ *  double-click on the name swaps the label for an inline input — Enter
+ *  commits the rename, Escape (or blur) cancels. The 200 ms suppression
+ *  window blocks the second click of a double-click from re-applying the
+ *  template the user is just trying to rename. */
+function TemplateRow({ template, onApply, onDelete, onRename }: TemplateRowProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(template.name);
+  const suppressClickRef = useRef(0);
+
+  const startEditing = () => {
+    setDraft(template.name);
+    setEditing(true);
+    suppressClickRef.current = Date.now();
+  };
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== template.name) onRename(next);
+    setEditing(false);
+  };
+
+  return (
+    <div
+      className="layer"
+      onClick={() => {
+        if (editing) return;
+        // Suppress the application click that lands right after a dbl-click
+        // (the second mouseup of the dbl-click also fires `click`).
+        if (Date.now() - suppressClickRef.current < 350) return;
+        onApply();
+      }}
+      title={`Saved ${new Date(template.createdAt).toLocaleString()}`}
+    >
+      <div className="thumb" style={{ display: 'grid', placeItems: 'center' }}>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 9, color: 'var(--text-3)' }}>
+          {template.state.cells.length}
+        </span>
+      </div>
+      {editing ? (
+        <input
+          className="num-input"
+          autoFocus
+          value={draft}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setEditing(false);
+            }
+          }}
+          style={{
+            flex: 1,
+            height: 24,
+            textAlign: 'left',
+            padding: '0 8px',
+            fontFamily: 'inherit',
+            fontSize: 12,
+          }}
+        />
+      ) : (
+        <div
+          className="name"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            startEditing();
+          }}
+          title="Double-click to rename"
+        >
+          {template.name}
+        </div>
+      )}
+      {!editing && (
+        <div className="meta">
+          {template.state.grid.cols}×{template.state.grid.rows}
+        </div>
+      )}
+      {!editing && (
+        <button
+          className="icon-btn"
+          style={{ width: 20, height: 20 }}
+          onClick={onDelete}
+          title="Delete template"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
+    </div>
   );
 }

@@ -40,18 +40,31 @@ function write(list: SavedTemplate[]): void {
  *  When `includeImages` is false (the default) cell images are also removed so the
  *  template is purely a layout/style snapshot that can host any new photo set. */
 function clean(state: PhotoGridState, includeImages: boolean): PhotoGridState {
+  // Watermark image follows the same image-or-not policy as cells/bg.
+  const watermark = state.container.watermark
+    ? {
+        ...state.container.watermark,
+        image: includeImages
+          ? state.container.watermark.image
+            ? { ...state.container.watermark.image, previewUrl: undefined }
+            : null
+          : null,
+      }
+    : undefined;
   return {
     ...state,
     selectedCellIds: [],
+    selectedTextLayerId: null,
     canvas: { zoom: 1 },
-    container: includeImages
-      ? {
-          ...state.container,
-          bgImage: state.container.bgImage
-            ? { ...state.container.bgImage, previewUrl: undefined }
-            : null,
-        }
-      : { ...state.container, bgImage: null },
+    container: {
+      ...state.container,
+      bgImage: includeImages
+        ? state.container.bgImage
+          ? { ...state.container.bgImage, previewUrl: undefined }
+          : null
+        : null,
+      watermark,
+    },
     cells: state.cells.map((c) => {
       if (!c.image) return c;
       if (!includeImages) {

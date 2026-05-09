@@ -1,16 +1,120 @@
-import type { Action, Cell, GridConfig, PhotoGridState, ShapeId } from '@/types';
+import type {
+  Action,
+  Cell,
+  CellFilters,
+  GridConfig,
+  PhotoGridState,
+  ShapeId,
+  TextLayer,
+  Watermark,
+} from '@/types';
 import { ASPECT_RATIOS, LAYOUT_PRESETS, dimensionsFor } from './presets';
+
+/** All-default filter values: every effect off / neutral. */
+export const DEFAULT_FILTERS: CellFilters = {
+  grayscale: 0,
+  sepia: 0,
+  contrast: 1,
+  brightness: 1,
+  saturate: 1,
+  hueRotate: 0,
+  invert: 0,
+  blur: 0,
+};
+
+/** Build a CSS `filter:` string from structured filter params. Returns 'none'
+ *  when every value is at default (so the renderer can skip the filter). */
+export function filtersToCss(f: CellFilters | undefined): string {
+  if (!f) return 'none';
+  const parts: string[] = [];
+  if (f.grayscale > 0) parts.push(`grayscale(${(f.grayscale * 100).toFixed(2)}%)`);
+  if (f.sepia > 0) parts.push(`sepia(${(f.sepia * 100).toFixed(2)}%)`);
+  if (Math.abs(f.contrast - 1) > 1e-3) parts.push(`contrast(${f.contrast.toFixed(3)})`);
+  if (Math.abs(f.brightness - 1) > 1e-3)
+    parts.push(`brightness(${f.brightness.toFixed(3)})`);
+  if (Math.abs(f.saturate - 1) > 1e-3) parts.push(`saturate(${f.saturate.toFixed(3)})`);
+  if (Math.abs(f.hueRotate) > 1e-3) parts.push(`hue-rotate(${f.hueRotate.toFixed(2)}deg)`);
+  if (f.invert > 0) parts.push(`invert(${(f.invert * 100).toFixed(2)}%)`);
+  if (f.blur > 0) parts.push(`blur(${f.blur.toFixed(2)}px)`);
+  return parts.length === 0 ? 'none' : parts.join(' ');
+}
+
+/** Inverse of filtersToCss for templates saved with the legacy CSS string.
+ *  Best-effort — anything we can't parse falls back to defaults. */
+export function cssToFilters(css: string | undefined): CellFilters {
+  const out = { ...DEFAULT_FILTERS };
+  if (!css || css.trim() === 'none') return out;
+  const re = /([a-z\-]+)\(([^)]+)\)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css)) !== null) {
+    const fn = m[1].toLowerCase();
+    const arg = m[2].trim();
+    const num = (s: string, fallback: number): number => {
+      const t = s.trim();
+      if (t.endsWith('%')) {
+        const n = Number.parseFloat(t.slice(0, -1));
+        return Number.isFinite(n) ? n / 100 : fallback;
+      }
+      if (t.endsWith('deg')) {
+        const n = Number.parseFloat(t.slice(0, -3));
+        return Number.isFinite(n) ? n : fallback;
+      }
+      if (t.endsWith('px')) {
+        const n = Number.parseFloat(t.slice(0, -2));
+        return Number.isFinite(n) ? n : fallback;
+      }
+      const n = Number.parseFloat(t);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    if (fn === 'grayscale') out.grayscale = num(arg, 0);
+    else if (fn === 'sepia') out.sepia = num(arg, 0);
+    else if (fn === 'contrast') out.contrast = num(arg, 1);
+    else if (fn === 'brightness') out.brightness = num(arg, 1);
+    else if (fn === 'saturate') out.saturate = num(arg, 1);
+    else if (fn === 'hue-rotate') out.hueRotate = num(arg, 0);
+    else if (fn === 'invert') out.invert = num(arg, 0);
+    else if (fn === 'blur') out.blur = num(arg, 0);
+  }
+  return out;
+}
+
+/** Read a cell's filter params, falling back to parsing the legacy CSS string
+ *  for templates saved before structured filters existed. */
+export function getCellFilters(cell: Cell): CellFilters {
+  if (cell.filters) return cell.filters;
+  return cssToFilters(cell.filter);
+}
+
+export const DEFAULT_WATERMARK: Watermark = {
+  enabled: false,
+  kind: 'text',
+  text: '© Photogrid',
+  font: 'Helvetica, Arial, sans-serif',
+  weight: 600,
+  image: null,
+  x: 0.5,
+  y: 0.95,
+  sizePx: 64,
+  opacity: 0.6,
+  angle: 0,
+  color: '#ffffff',
+};
 
 let _id = 0;
 export const uid = (p = 'c'): string => `${p}_${(++_id).toString(36)}`;
 
-/** Short, session-unique export filename — e.g. PG_l3k7q. The base36 timestamp
- *  changes every second, which is short enough to read at a glance and unique
- *  enough that the same session won't generate collisions in normal use.
- *  Calling sites should regenerate this on RESET / REPLACE so each new
+/** Human-scannable, session-unique export filename — e.g. PG_20260509_103128.
+ *  Format is `PG_YYYYMMDD_HHMMSS` so the saved file is sortable by creation
+ *  time without needing to look at filesystem metadata. Calling sites
+ *  regenerate this on RESET / REPLACE / APPLY_PRESET so each new
  *  session/template starts with its own name. */
 export function generateFilename(): string {
-  return `PG_${Math.floor(Date.now() / 1000).toString(36)}`;
+  const d = new Date();
+  const pad = (n: number): string => n.toString().padStart(2, '0');
+  return (
+    `PG_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
 }
 
 const blankCell = (col: number, row: number): Cell => ({
@@ -51,6 +155,10 @@ export function defaultState(): PhotoGridState {
       gap: 8,
       borderWidth: 0,
       borderColor: '#0a0a0a',
+      bgBlur: 0,
+      bgOverlayColor: '#000000',
+      bgOverlayOpacity: 0,
+      watermark: { ...DEFAULT_WATERMARK },
     },
     grid: { cols: preset.cols, rows: preset.rows },
     cells: preset.cells.map((c) => ({
@@ -61,6 +169,8 @@ export function defaultState(): PhotoGridState {
     selectedCellIds: [],
     output: { format: 'png', quality: 0.92, scale: 2, baseSize: 1200, filename: generateFilename() },
     canvas: { zoom: 1 },
+    textLayers: [],
+    selectedTextLayerId: null,
   };
 }
 
@@ -1003,7 +1113,15 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         cellBorder: old[i]?.cellBorder ?? 0,
         cellBorderColor: old[i]?.cellBorderColor ?? '#ffffff',
       }));
-      return { ...state, grid: { cols: p.cols, rows: p.rows }, cells, selectedCellIds: [] };
+      return {
+        ...state,
+        grid: { cols: p.cols, rows: p.rows },
+        cells,
+        selectedCellIds: [],
+        // A new template = a new session. Regenerate the filename so the next
+        // export doesn't trample the previous template's saved file.
+        output: { ...state.output, filename: generateFilename() },
+      };
     }
     case 'EDGE_RESIZE': {
       const map = new Map(action.updates.map((u) => [u.id, u]));
@@ -1094,6 +1212,13 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         ...state,
         cells: state.cells.map((c) => (c.id === action.id ? { ...c, ...action.patch } : c)),
       };
+    case 'UPDATE_CELLS': {
+      const targets = new Set(action.ids);
+      return {
+        ...state,
+        cells: state.cells.map((c) => (targets.has(c.id) ? { ...c, ...action.patch } : c)),
+      };
+    }
     case 'MOVE_CELL': {
       const cells = state.cells.map((c) => {
         if (c.id !== action.id) return c;
@@ -1471,6 +1596,73 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
     }
     case 'RESET':
       return defaultState();
+    case 'SET_WATERMARK': {
+      const current = state.container.watermark ?? { ...DEFAULT_WATERMARK };
+      return {
+        ...state,
+        container: { ...state.container, watermark: { ...current, ...action.patch } },
+      };
+    }
+    case 'SELECT_WATERMARK':
+      return {
+        ...state,
+        selectedWatermark: action.selected,
+        // Selecting the watermark steals focus from any cell / text-layer
+        // selection so the inspector pivots cleanly.
+        ...(action.selected ? { selectedCellIds: [], selectedTextLayerId: null } : {}),
+      };
+    case 'ADD_TEXT_LAYER': {
+      const layers = state.textLayers ?? [];
+      const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
+      const newLayer: TextLayer = {
+        id: uid('t'),
+        text: 'Your text',
+        font: 'Helvetica, Arial, sans-serif',
+        size: Math.max(24, Math.round(dims.h * 0.06)),
+        color: '#ffffff',
+        x: 0.5,
+        y: 0.5,
+        rotation: 0,
+        opacity: 1,
+        weight: 600,
+        align: 'center',
+        z: 'in-front-of-cells',
+        ...action.layer,
+      };
+      return {
+        ...state,
+        textLayers: [...layers, newLayer],
+        selectedTextLayerId: newLayer.id,
+        selectedCellIds: [],
+      };
+    }
+    case 'UPDATE_TEXT_LAYER': {
+      const layers = state.textLayers ?? [];
+      return {
+        ...state,
+        textLayers: layers.map((l) => (l.id === action.id ? { ...l, ...action.patch } : l)),
+      };
+    }
+    case 'REMOVE_TEXT_LAYER': {
+      const layers = state.textLayers ?? [];
+      return {
+        ...state,
+        textLayers: layers.filter((l) => l.id !== action.id),
+        selectedTextLayerId:
+          state.selectedTextLayerId === action.id ? null : state.selectedTextLayerId,
+      };
+    }
+    case 'SELECT_TEXT_LAYER':
+      return { ...state, selectedTextLayerId: action.id };
+    case 'REORDER_TEXT_LAYER': {
+      const layers = (state.textLayers ?? []).slice();
+      const idx = layers.findIndex((l) => l.id === action.id);
+      if (idx < 0) return state;
+      const swap = action.direction === 'up' ? idx - 1 : idx + 1;
+      if (swap < 0 || swap >= layers.length) return state;
+      [layers[idx], layers[swap]] = [layers[swap], layers[idx]];
+      return { ...state, textLayers: layers };
+    }
     default:
       return state;
   }
