@@ -72,7 +72,7 @@ export function ContainerTab({ state, dispatch }: Props) {
         {c.shape === 'rounded' && (
           <div className="row" style={{ marginTop: 12 }}>
             <label>Corner</label>
-            <Slider value={c.cornerRadius} min={0} max={50} onChange={(v) => set({ cornerRadius: v })} suffix="%" />
+            <Slider value={c.cornerRadius} min={0} max={200} onChange={(v) => set({ cornerRadius: v })} suffix="px" />
           </div>
         )}
       </div>
@@ -132,10 +132,10 @@ export function ContainerTab({ state, dispatch }: Props) {
         <Check checked={c.bgTransparent} onChange={(v) => set({ bgTransparent: v })}>
           Transparent background
         </Check>
-        <div className="row" style={{ marginTop: 6 }}>
+        <div className="row-stack" style={{ marginTop: 6 }}>
           <label>Image</label>
           {c.bgImage ? (
-            <div className="flex items-center gap-2">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
               <button
                 className="field"
                 onClick={pickBgImage}

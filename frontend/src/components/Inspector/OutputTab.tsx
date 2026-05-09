@@ -198,13 +198,13 @@ function FolderRow() {
 
   return (
     <>
-      <div className="row" style={{ marginTop: 4 }}>
+      <div className="row-stack" style={{ marginTop: 6 }}>
         <label>Folder</label>
         {handle ? (
-          <div className="flex items-center gap-2">
+          <>
             <span
               className="field"
-              style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
               title={handle.name}
             >
               <FolderOpen size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
@@ -212,18 +212,20 @@ function FolderRow() {
                 {handle.name}
               </span>
             </span>
-            <button className="btn ghost" style={{ height: 28, padding: '0 8px' }} onClick={onPick}>
-              Change
-            </button>
-            <button
-              className="btn ghost"
-              style={{ height: 28, padding: '0 8px', color: 'var(--text-3)' }}
-              onClick={onClear}
-              title="Use save dialog instead"
-            >
-              ×
-            </button>
-          </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn ghost" style={{ height: 26, padding: '0 8px', flex: 1 }} onClick={onPick}>
+                Change
+              </button>
+              <button
+                className="btn ghost"
+                style={{ height: 26, padding: '0 8px', color: 'var(--text-3)' }}
+                onClick={onClear}
+                title="Use save dialog instead"
+              >
+                ×
+              </button>
+            </div>
+          </>
         ) : (
           <button className="btn" style={{ width: '100%' }} onClick={onPick}>
             <Folder size={14} /> Choose folder…

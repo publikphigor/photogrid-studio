@@ -192,59 +192,47 @@ export function CellTab({ state, dispatch }: Props) {
 
       <div className="section">
         <h4 className="section-title">Position</h4>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="row col" style={{ margin: 0 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Column span</span>
-            <input
-              className="num-input"
-              type="number"
-              min={1}
-              max={state.grid.cols}
-              value={cell.colSpan}
-              onChange={(e) =>
-                dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: +e.target.value, rowSpan: cell.rowSpan })
-              }
-            />
-          </label>
-          <label className="row col" style={{ margin: 0 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Row span</span>
-            <input
-              className="num-input"
-              type="number"
-              min={1}
-              max={state.grid.rows}
-              value={cell.rowSpan}
-              onChange={(e) =>
-                dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: cell.colSpan, rowSpan: +e.target.value })
-              }
-            />
-          </label>
-          <label className="row col" style={{ margin: 0 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Column</span>
-            <input
-              className="num-input"
-              type="number"
-              min={1}
-              max={state.grid.cols}
-              value={cell.colStart}
-              onChange={(e) =>
-                dispatch({ type: 'MOVE_CELL', id: cell.id, col: +e.target.value, row: cell.rowStart })
-              }
-            />
-          </label>
-          <label className="row col" style={{ margin: 0 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>Row</span>
-            <input
-              className="num-input"
-              type="number"
-              min={1}
-              max={state.grid.rows}
-              value={cell.rowStart}
-              onChange={(e) =>
-                dispatch({ type: 'MOVE_CELL', id: cell.id, col: cell.colStart, row: +e.target.value })
-              }
-            />
-          </label>
+        <div className="grid grid-cols-2 gap-x-2 gap-y-2">
+          <PositionField
+            label="Span W"
+            title="Column span"
+            min={1}
+            max={state.grid.cols}
+            value={cell.colSpan}
+            onCommit={(v) =>
+              dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: v, rowSpan: cell.rowSpan })
+            }
+          />
+          <PositionField
+            label="Span H"
+            title="Row span"
+            min={1}
+            max={state.grid.rows}
+            value={cell.rowSpan}
+            onCommit={(v) =>
+              dispatch({ type: 'RESIZE_CELL', id: cell.id, colSpan: cell.colSpan, rowSpan: v })
+            }
+          />
+          <PositionField
+            label="Col"
+            title="Column start"
+            min={1}
+            max={state.grid.cols}
+            value={cell.colStart}
+            onCommit={(v) =>
+              dispatch({ type: 'MOVE_CELL', id: cell.id, col: v, row: cell.rowStart })
+            }
+          />
+          <PositionField
+            label="Row"
+            title="Row start"
+            min={1}
+            max={state.grid.rows}
+            value={cell.rowStart}
+            onCommit={(v) =>
+              dispatch({ type: 'MOVE_CELL', id: cell.id, col: cell.colStart, row: v })
+            }
+          />
         </div>
       </div>
 
@@ -289,15 +277,12 @@ export function CellTab({ state, dispatch }: Props) {
         {cell.shape === 'rounded' && (
           <div className="row">
             <label>Radius</label>
-            <Slider value={cell.cellRadius} min={0} max={50} onChange={(v) => set({ cellRadius: v })} suffix="%" />
+            <Slider value={cell.cellRadius} min={0} max={200} onChange={(v) => set({ cellRadius: v })} suffix="px" />
           </div>
-        )}
-        {cell.shape !== 'rounded' && (
-          <div className="row" style={{ display: 'none' }}><label /><span /></div>
         )}
         <div className="row">
           <label>Border</label>
-          <Slider value={cell.cellBorder} min={0} max={20} onChange={(v) => set({ cellBorder: v })} suffix="px" />
+          <Slider value={cell.cellBorder} min={0} max={32} onChange={(v) => set({ cellBorder: v })} suffix="px" />
         </div>
         {cell.cellBorder > 0 && (
           <div className="row">
@@ -364,4 +349,61 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
+}
+
+/** Compact label-above-input field for the Position grid. Keeps a buffered
+ *  edit so the user can clear the field and type a fresh value (matches the
+ *  Slider's commit-on-blur pattern). */
+function PositionField({
+  label,
+  title,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  label: string;
+  title: string;
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (v: number) => void;
+}) {
+  const [raw, setRaw] = useState<string | null>(null);
+  const display = raw ?? String(value);
+  return (
+    <label className="row col" style={{ margin: 0, gap: 4 }} title={title}>
+      <span style={{ fontSize: 10.5, color: 'var(--text-3)', letterSpacing: '0.04em' }}>
+        {label}
+      </span>
+      <input
+        className="num-input"
+        type="text"
+        inputMode="numeric"
+        value={display}
+        onFocus={(e) => {
+          setRaw(String(value));
+          e.currentTarget.select();
+        }}
+        onChange={(e) => setRaw(e.target.value.replace(/[^0-9]/g, ''))}
+        onBlur={() => {
+          if (raw == null) return;
+          if (raw.trim().length > 0) {
+            const n = Math.max(min, Math.min(max, Number.parseInt(raw, 10)));
+            if (Number.isFinite(n)) onCommit(n);
+          }
+          setRaw(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            (e.target as HTMLInputElement).blur();
+          } else if (e.key === 'Escape') {
+            setRaw(null);
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+      />
+    </label>
+  );
 }
