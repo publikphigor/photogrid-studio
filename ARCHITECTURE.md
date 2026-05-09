@@ -157,25 +157,31 @@ The default `output.filename` is generated each session (and on every template a
 
 ### 5e. Pillow render in detail
 
-`renderer/pillow_renderer.py:_render_sync`:
+`renderer/pillow_renderer.py:_render_sync` paints in a strict z-band order so the export matches the canvas exactly. The key invariant is that **clipped bands** (anything that should respect the container silhouette) accumulate into one buffer, then the container alpha mask is applied; **unclipped bands** (free-floating text the user dropped behind or in front of the container) wrap the clipped buffer.
 
 1. **Output size.** `dimensions_for(aspect, baseSize)` (mirrors the frontend's `dimensionsFor`) produces the unscaled `(w, h)`. `output.scale ∈ {1,2,3,4}` multiplies. Pixel-budget guard rejects anything past `MAX_PIXELS_MP`.
 2. **Base canvas.** Transparent RGBA at `(W, H)`.
-3. **Container background.** If `bgTransparent` is false, fill with `cont.bg`. If `cont.bgImage` is set, open that hash from cache, run `_fit_image` (cover/contain/fill — same semantics as object-fit), composite over the colour fill.
-4. **Layout.** `grid_tracks(W, H, padding, gap, cols, rows, col_sizes, row_sizes)` returns a `GridTracks` whose `col_widths` and `row_heights` are **per-track pixel widths** (length `cols`/`rows`) — non-uniform when the user has corner-resized or run Align. `cell_box(...)` walks the cumulative track widths plus the cell's `dx/dy/dw/dh` (multiplied by `output.scale` to match the scaled-pixel canvas) to produce the cell's absolute pixel rectangle.
-5. **For each cell:**
-   - Build the cell shape mask. If `cell.shape != 'rect'`, reuse `make_container_mask` (same code path as the container shape). Otherwise `make_cell_mask` honours `cellRadius`.
-   - Open the source from cache (`Image.open` + `.convert('RGBA')`).
-   - Apply CSS filters: `apply_css_filter` parses tokens like `contrast(1.15) saturate(1.2)` with a small regex tokenizer and chains `ImageEnhance` operations or hand-written numpy paths (sepia matrix multiply, hue-rotate via HSV channel rotation).
-   - `compose_cell(src, box, cell, mask, pixel_scale)` resamples the image to its target display size, applies `cell.scale`, rotates by `-cell.rotation` (PIL is CCW, CSS is CW), positions inside the cell box with `cell.offsetX/Y` (multiplied by `pixel_scale` so the design-pixel offsets land on the correct output pixels). For `fit == 'native'` the image renders at its intrinsic dimensions (`iw × ih × pixel_scale`); for cover/contain/fill the existing object-fit math runs. Cover-fit + rotation pre-scales by `|cosθ|+|sinθ|` so the rotated image still covers the cell.
-   - The cell mask is multiplied with the tile's existing alpha (numpy `arr_a * arr_m // 255`) so rounded/clipped cell shapes survive composition.
-   - `alpha_composite` the tile onto the base.
-   - If `cellBorder > 0`, `stroke_cell` paints an inset stroke band by subtracting an eroded mask (`ImageFilter.MinFilter`) from the original mask.
-6. **Container mask.** `make_container_mask` for the requested shape; multiplied into the base alpha.
-7. **Container border.** Same erosion-band trick at the container level.
-8. **Encode.** PNG with `optimize=True`; JPEG with quality + progressive baseline (alpha is flattened on white if present); WebP with `method=6` for best compression. **SVG** is a thin wrapper: encode to PNG first, then emit `<svg viewBox="0 0 W H"><image href="data:image/png;base64,…"/></svg>`. It's not vector geometry — the wrapper's value is producing an `.svg` file the user can drop into vector tools / web pages without losing pixel fidelity.
+3. **Container background (clipped band).**
+   - If `bgTransparent` is false, fill with `cont.bg`.
+   - If `cont.bgImage` is set, `_fit_image` it onto the canvas, then optionally `ImageFilter.GaussianBlur(radius = bgBlur * scale)`.
+   - If `cont.bgOverlayOpacity > 0`, alpha-composite a flat-colour overlay (`bgOverlayColor` × opacity) on top of the bg layers but BELOW everything that follows. This is the "darken / brighten so cells pop" knob.
+4. **Behind-cells text layers.** Every `state.textLayers` entry whose `z == 'behind-cells'` is rasterised by `renderer/overlays.py:composite_text_layer` and pasted onto the buffer here — between bg and cells, still inside the upcoming container clip.
+5. **Layout.** `grid_tracks(W, H, padding, gap, cols, rows, col_sizes, row_sizes)` returns a `GridTracks` whose `col_widths` and `row_heights` are **per-track pixel widths** (length `cols`/`rows`) — non-uniform when the user has corner-resized or run Align. `cell_box(...)` walks the cumulative track widths plus the cell's `dx/dy/dw/dh` (multiplied by `output.scale`) to produce the cell's absolute pixel rectangle.
+6. **For each cell:**
+   - Build the cell shape mask. If `cell.shape != 'rect'`, reuse `make_container_mask`. Otherwise `make_cell_mask` honours `cellRadius`.
+   - Open the source from cache and `apply_css_filter` (the structured `cell.filters` is serialised to its CSS string in the reducer; backend keeps consuming the legacy string).
+   - `compose_cell(src, box, cell, mask, pixel_scale)` resamples, scales, rotates, positions, and clips. Cover-fit + rotation pre-scales by `|cosθ|+|sinθ|`.
+   - `alpha_composite` the tile.
+   - If `cellBorder > 0`, `stroke_cell` paints an inset stroke band.
+7. **In-front-of-cells text layers** + **watermark.** Same overlay path as step 4 for layers with `z == 'in-front-of-cells'`. Then `composite_watermark(base, cont.watermark, scale)` rasterises the watermark (text or image) at `sizePx * scale` design pixels using `_load_font(family, size, weight)` to map CSS family stacks to Liberation/DejaVu TTFs in the runtime image.
+8. **Container shape mask.** `make_container_mask` for `cont.shape`; multiplied into the buffer's alpha. This clips everything from steps 3–7 to the container silhouette.
+9. **Container border.** `stroke_container` paints the inset border band along the (now-clipped) shape outline.
+10. **Unclipped text bands.** If any `textLayers` entry has `z == 'behind-container'` or `'in-front-of-container'`, build a fresh `(W, H)` canvas, paint the behind-container layers, alpha-composite the clipped buffer on top, then paint the in-front-of-container layers. These bands extend past the silhouette by design.
+11. **Encode.** PNG with `optimize=True`; JPEG with quality + progressive baseline; WebP with `method=6`. **SVG** is a thin wrapper: encode to PNG first, then emit `<svg viewBox="0 0 W H"><image href="data:image/png;base64,…"/></svg>`.
 
-The mask functions (`renderer/shapes.py`) render at 2× scale via `ImageDraw` then downsample with LANCZOS for anti-aliased edges. Polygon shapes (rect, rounded, circle, oval, hexagon, diamond, arch, squircle, **triangle, pentagon, octagon, star, parallelogram, chevron**) are exact. Heart and blob are approximated with overlapping ellipses + polygons.
+`renderer/overlays.py` owns both `composite_text_layer` and `composite_watermark`. The font resolver maps CSS family stacks to known runtime paths (Liberation Sans for Helvetica/Arial, Liberation Serif for Georgia/Times, Liberation Mono for Courier, DejaVu fallbacks). Weight ≥ 600 picks the matching `-Bold` face — no fake-bold offset.
+
+The mask functions (`renderer/shapes.py`) render at 2× scale via `ImageDraw` then downsample with LANCZOS. Polygon shapes (rect, rounded, circle, oval, hexagon, diamond, arch, squircle, triangle, pentagon, octagon, star, parallelogram, chevron) are exact. **Heart** samples the same four cubic-bezier segments the frontend SVG path defines (`M50,92 C18,74 4,46 18,24 …`) at 64 steps each, so canvas and export match pixel-for-pixel. Blob is an overlapping-ellipses approximation.
 
 ---
 
@@ -183,36 +189,48 @@ The mask functions (`renderer/shapes.py`) render at 2× scale via `ImageDraw` th
 
 `frontend/src/state/reducer.ts` is the single source of truth.
 
-- **`PhotoGridState`**: `{ container, grid, cells, selectedCellIds, output, canvas }`. Every action returns a new immutable copy; React re-renders only the parts that referentially changed.
+- **`PhotoGridState`**: `{ container, grid, cells, selectedCellIds, output, canvas, textLayers?, selectedTextLayerId?, selectedWatermark? }`. Every action returns a new immutable copy; React re-renders only the parts that referentially changed.
 - **`useHistoryReducer`** (`state/history.ts`) wraps `useReducer` with a 60-step ring buffer. Selection, zoom, undo, redo are flagged ephemeral — they don't push to history. ⌘Z / ⌘⇧Z hit window-level handlers in `App.tsx`.
 
 ### Selection model
 
-`selectedCellIds` is an array. The first id is the **primary** — what the inspector reads, and what the merge action keeps as the surviving cell. Empty array = nothing selected.
+There are three independent selection focuses, each with its own action set so the inspector can pivot to the right tab:
 
-- `SELECT { id }` replaces the selection (single id or none).
-- `SELECT_TOGGLE { id }` adds/removes (cmd/ctrl+click in the canvas or layers panel).
-- Click outside any cell clears the selection (`onStageMouseDown` checks `closest('[data-cell-id]')` / `closest('[data-handle-dir]')`).
-- `Escape` deselects via the keybind in `App.tsx`.
+- **Cells.** `selectedCellIds: string[]` — first id is the **primary** (inspector source-of-truth, merge survivor).
+  - `SELECT { id }` replaces; `SELECT_TOGGLE { id }` adds/removes (shift+click in the canvas or layers panel).
+- **Text layers.** `selectedTextLayerId: string | null` — drives the Canvas tab; clicking a text layer on canvas or in the Layers panel sets it.
+  - `SELECT_TEXT_LAYER { id }`.
+- **Watermark.** `selectedWatermark: boolean` — clicking the watermark on canvas sets it; the inspector pivots to the Container tab.
+  - `SELECT_WATERMARK { selected }`. Setting `true` also clears cell + text-layer selection.
 
-Multi-selected cells get the `.cell.multi-selected` modifier so the outline thickens (4 px) and non-primary cells get a softer dashed variant (`.cell.multi-selected.selected:not(.primary)`). The `--focus` token is theme-inverted (white on dark, black on light) so the selection always pops against any cell background. Single selection stays at 3 px solid.
+Click outside any cell / overlay clears every focus (`onStageMouseDown` checks `closest('[data-cell-id]')`, `[data-handle-dir]`, `[data-watermark]`). `Escape` walks the focuses in priority order: text layer → watermark → cells.
+
+Multi-selected cells get the `.cell.multi-selected` modifier (outline thickens to 4 px, non-primary cells dashed). Single selection stays 3 px solid.
 
 ### Cell ops
 
-- **`ADD_CELL`** — calls `findMaxEmptyRect`, places a cell sized to the largest empty rectangle. Only grows the grid (extending `colSizes`/`rowSizes` with the average existing weight) when there's no empty rect.
-- **`REMOVE_CELL`** — runs `compactAfterRemoval`, which tries three strategies in order to absorb the freed area:
-  1. Drop fully-empty column or row tracks (and shift remaining cells / size arrays).
-  2. Expand a same-band neighbour's span across the freed grid cells.
-  3. Extend an adjacent cell's pixel offsets to visually cover the freed pixel rect — but only when that extension wouldn't overlap any other cell.
-- **`MERGE_CELLS { ids }`** — replaces the primary cell with the bounding rect of all selected cells, drops the rest. Pixel offsets on the surviving cell are zeroed.
-- **`SYNC_CELLS_SHAPE { ids }`** — copies the primary cell's `shape` + `cellRadius` onto every other selected cell. Keeps images and positions; just unifies silhouettes.
-- **`SPLIT_CELL { id, axis, count }`** — replaces a cell with N stacked sub-cells along the given axis (`row` or `col`). Inserts `N-1` new tracks within the target's band; cells that intersect the band gain matching span so their visual size is preserved. Track weights for the inserted rows/cols are derived from the original band's weight so other cells outside the band don't move. The image (if any) is copied into every sub-cell.
-- **`MOVE_CELL_TO_RECT { id, colStart, rowStart, colSpan, rowSpan }`** — used by shift-drag onto whitespace. Snaps the cell to that empty rect at destination size, clearing pixel offsets.
-- **`MOVE_CELL_TO_CELL { sourceId, targetId }`** — shift-drag onto another cell. Swaps positions+spans wholesale.
-- **`SWAP_CELLS { aId, bId }`** — swaps just the *images* between two cells (no shift modifier).
-- **`MOVE_CELL`** / **`RESIZE_CELL`** — dispatched from the inspector's number inputs. Run `reflowAroundMover` to relocate any displaced cells; `RESIZE_CELL` rejects if displacement would require growing the grid.
-- **`FILL_FROM_FILES`** — assigns multiple uploads to consecutive empty cells, expanding the grid if there aren't enough.
-- **`FILL_EMPTY_NO_GROW`** — multi-image cell-click upload: surplus images go into empty cells, but the grid is never grown; extras are discarded.
+- **`UPDATE_CELL { id, patch }`** — single-cell style patch.
+- **`UPDATE_CELLS { ids, patch }`** — fan a patch across multiple cells in a single undo step. Used by batch editing in `Inspector/CellTab` and by paste-style across the multi-selection.
+- **`ADD_CELL`** — calls `findMaxEmptyRect`, places a cell sized to the largest empty rectangle. Only grows the grid when there's no empty rect.
+- **`REMOVE_CELL`** — runs `compactAfterRemoval`: drop empty tracks → expand same-band neighbour → extend adjacent cell's pixel offsets.
+- **`MERGE_CELLS { ids }`** — replaces the primary cell with the bounding rect of all selected cells. Pixel offsets zeroed.
+- **`SYNC_CELLS_SHAPE { ids }`** — copies the primary's `shape` + `cellRadius` onto every other selected cell.
+- **`SPLIT_CELL { id, axis, count }`** — N sub-cells along an axis; inserts `N-1` tracks; cells that intersect the band gain matching span.
+- **`SWAP_CELLS { aId, bId }`** — swaps just the *images* between two cells. Used by **shift+drag** in the canvas (replacing the old "move cell to cell"/"move cell to whitespace" flow).
+- **`MOVE_CELL`** / **`RESIZE_CELL`** — dispatched from the inspector's number inputs. Run `reflowAroundMover`; `RESIZE_CELL` rejects if displacement would require growing the grid.
+- **`MOVE_CELL_TO_RECT`** / **`MOVE_CELL_TO_CELL`** — still in the reducer for completeness (drag-to-move mouse paths were removed when shift+drag was repurposed for image swap; these actions are now only reachable programmatically).
+- **`FILL_FROM_FILES`** — assigns multiple uploads to consecutive empty cells, expanding the grid if needed.
+- **`FILL_EMPTY_NO_GROW`** — multi-image cell-click upload: surplus images fill empty cells; grid never grows.
+
+### Overlays + container
+
+- **`SET_CONTAINER { patch }`** — covers shape, aspect, padding, gap, border, bg colour/image/fit, **`bgBlur`**, **`bgOverlayColor`**, **`bgOverlayOpacity`**.
+- **`SET_WATERMARK { patch }`** — text/image, `font`, `weight`, `color`, `x`/`y` (fractions), `sizePx` (design pixels), `opacity`, `angle`, `enabled`.
+- **`ADD_TEXT_LAYER { layer? }`**, **`UPDATE_TEXT_LAYER { id, patch }`**, **`REMOVE_TEXT_LAYER { id }`**, **`REORDER_TEXT_LAYER { id, direction }`**. Each text layer carries `x/y` (fractions), `size` (design px), `font`, `weight`, `color`, `align`, `rotation`, `opacity`, and a `z` band: `behind-container | behind-cells | in-front-of-cells | in-front-of-container`. Paint order = array order within each band.
+
+### Style clipboard
+
+`state/styleClipboard.ts` is a tiny module-scoped buffer (not in `PhotoGridState`, intentionally session-only). The right-click context menu's **Copy style** captures `fit`, `scale`, `rotation`, `filter`, `filters`, `shape`, `cellRadius`, `cellBorder`, `cellBorderColor`. **Paste style** dispatches `UPDATE_CELL` (single cell) or `UPDATE_CELLS` (fans across the multi-selection). The buffer never includes the cell's image, position, or span — paste only swaps the look. Subscribers re-render the menu so "Paste style" appears reactively when something is on the clipboard.
 
 ### Resize
 
@@ -241,24 +259,32 @@ Two separate code paths under one set of 8 handles, picked by `dir.length === 2`
 
 `StageCanvas.tsx` owns one mousedown handler (`onCellMouseDown`) and one set of window listeners. The flow:
 
-1. **Mousedown on a cell** — records intent into a `dragRef` (a `useRef`, not state — no re-renders during drag): `{ kind, cellId, startX/Y, baseOffsetX/Y, imgEl, scale, rotation, invZoom, ghostSrc, nativeFit, wasPrimary, cmdOrCtrl, … }`. `kind` is `move` if `shiftKey`, otherwise `reposition` (used for both populated cells and the empty-cell click path).
-2. **Selection rules apply on mousedown** so they take effect even if the user only clicks (no drag past `CLICK_THRESHOLD = 4` px):
-   - cmd/ctrl+click → `SELECT_TOGGLE` (multi-select).
-   - plain click on an unselected cell → `SELECT` (replace).
-   - plain click on an already-primary-selected cell → no dispatch yet; the mouseup path decides.
-3. **Window mousemove** updates `curX/Y` in the ref. Movement past `CLICK_THRESHOLD` flips `moved` to true and schedules a `requestAnimationFrame`.
-4. The **frame callback** does one of two things:
+1. **Mousedown on a cell** — records intent into a `dragRef` (a `useRef`, not state — no re-renders during drag): `{ kind, cellId, startX/Y, baseOffsetX/Y, imgEl, scale, rotation, invZoom, ghostSrc, nativeFit, wasPrimary, shift, … }`. Right- and middle-clicks (`e.button !== 0`) bail out before the ref is set, so the right-click menu can't accidentally trigger a click-as-drag.
+2. **Drag kind** is `swap` when `shiftKey` is held on a populated cell, otherwise `reposition` (used for both populated cells and the empty-cell click path).
+3. **Selection rules on mousedown:**
+   - plain click on an unselected cell → `SELECT` (replace) immediately so the resize handles + drag target light up.
+   - shift+click and primary-cell click are **resolved on mouseup** so a shift+drag never leaves a dangling selection toggle.
+4. **Window mousemove** updates `curX/Y` in the ref. Movement past `CLICK_THRESHOLD = 4 px` flips `moved` to true and schedules a `requestAnimationFrame`.
+5. The **frame callback** does one of two things:
    - **Reposition:** mutates `imgEl.style.transform` directly (no React). Native fit prepends `translate(-50%, -50%)` so offsets are measured from the cell centre.
-   - **Swap / move:** updates the `ghost` React state, runs `document.elementFromPoint` to find the cell under the cursor (via `[data-cell-id]`), and stores `overId`.
-5. **Mouseup commits** via dispatch:
-   - If `!moved` and the cell is empty → open the file picker.
-   - If `!moved` and the cell is populated AND was already primary-selected → open the file picker (re-clicking a focused image opens "replace").
-   - If `!moved` and the cell is populated AND wasn't primary → just selected; nothing to do.
-   - cmd/ctrl modifier suppresses the picker entirely (the click was a multi-select intent).
+   - **Swap:** updates the `ghost` React state, runs `document.elementFromPoint` to find the cell under the cursor, and stores `overId`.
+6. **Mouseup commits** via dispatch:
+   - If `!moved && drag.shift` → `SELECT_TOGGLE` (multi-select toggle).
+   - If `!moved && !shift && !wasPrimary` → `SELECT` (just focus the cell). **The file picker no longer opens on single click**, even on empty cells — that lets the user bounce focus around without accidentally summoning the OS dialog.
+   - If `!moved && wasPrimary` → no-op; the cell stays focused.
    - If `moved && kind === 'reposition'` → `UPDATE_CELL { offsetX, offsetY }`.
-   - If `moved && drag.overId` → `MOVE_CELL_TO_CELL` (shift) or `SWAP_CELLS` (no shift). Wrapped in `document.startViewTransition` when the browser supports it.
-   - If `moved && kind === 'move' && !overId` → `pointToGridSlot(curX, curY, …)` finds the largest empty rectangle at that point; if any, dispatch `MOVE_CELL_TO_RECT` to snap the dragged cell to it.
-6. **Wheel on a populated cell** zooms the image inside (`cell.scale *= e^(-deltaY * 0.0015)`, clamped to `[0.05, 5]`).
+   - If `moved && kind === 'swap' && drag.overId` → `SWAP_CELLS` (images only). Wrapped in `document.startViewTransition` when supported. Drag-to-move-cell-position and drag-to-whitespace-snap were removed when shift was repurposed for image swap.
+7. **Double-click** on a cell calls `uploadToCell(id)`. The handler is guarded by a `pickerOpenRef`: once a file picker opens, further calls are dropped until the picker resolves (via the `cancel` event on Chromium/Safari, or a 200 ms-delayed `window` focus fallback on Firefox). A rapid triple-click can therefore only ever produce a single OS dialog.
+8. **Wheel on a populated cell** zooms the image inside (`cell.scale *= e^(-deltaY * 0.0015)`, clamped to `[0.05, 5]`).
+
+### Overlay drag (watermark + text layers)
+
+Both watermarks and text layers live inside `.board` (or as siblings for the unclipped text z-bands) and use a shared `useDispatchedFractionDrag(dims, commit)` helper. On mousedown the helper measures the host element (`.board` or `.board-frame`) and wires `mousemove`/`mouseup` to translate the cursor into 0..1 fractions of the design canvas, dispatching the matching action on every frame:
+
+- Watermark drag → `SET_WATERMARK { x, y }`.
+- Text-layer drag → `UPDATE_TEXT_LAYER { id, patch: { x, y } }`.
+
+Clicking either overlay also selects it: text layer → `SELECT_TEXT_LAYER` (Inspector pivots to the Canvas tab); watermark → `SELECT_WATERMARK` (Inspector pivots to the Container tab). Both pick up a dashed outline while selected and clear on stage-backdrop click or `Escape`.
 
 ### Resize handles
 
@@ -274,11 +300,11 @@ OS file drops still use HTML5 drag-and-drop on the stage element itself, but eve
 
 ### Right-click context menu
 
-`StageCanvas.tsx:onStageContextMenu` opens a custom `<ContextMenu>` (`components/ContextMenu.tsx`) at the cursor when the user right-clicks a cell. The menu is portalled into `document.body`, measured after mount, and nudged inward if it would overflow the viewport (so it always lands on-screen). Right-click on the stage backdrop (no cell under cursor) falls through to the browser's native menu.
+`StageCanvas.tsx:onStageContextMenu` opens a custom `<ContextMenu>` (`components/ContextMenu.tsx`) at the cursor when the user right-clicks a cell. The menu is portalled into `document.body`, measured after mount, and nudged inward if it would overflow the viewport. Right-click on the stage backdrop (no cell under cursor) falls through to the browser's native menu.
 
-Items are decided by `buildContextMenu(...)` from the current selection:
-- **Single-cell selection** — Upload / Replace, Split into 2 rows, Split into 2 columns, Delete cell.
-- **Multi-cell selection** — Merge cells (⌘M), Sync shape (apply primary's shape to all selected), Delete N cells.
+Items are decided by `buildContextMenu(...)` from the current selection and the in-memory `StyleClipboard`:
+- **Single-cell selection** — Upload / Replace, Copy style, Paste style (only when something is on the clipboard), Split into 2 rows, Split into 2 columns, Delete cell.
+- **Multi-cell selection** — Merge cells (⌘M), Sync shape, Copy style (from primary), Paste style to N cells, Delete N cells.
 
 Right-clicking a cell that isn't already in the multi-selection replaces the selection with that cell first, so the menu's actions target a sensible thing.
 
@@ -290,26 +316,32 @@ Right-clicking a cell that isn't already in the multi-selection replaces the sel
 
 ## 8. Click & focus rules at a glance
 
-| Source | Cell state | Modifier | Outcome |
+| Source | Target state | Modifier | Outcome |
 | --- | --- | --- | --- |
-| Click cell | Empty | none | Open file picker |
-| Click cell | Populated, not primary-selected | none | Become the sole selection; no picker |
-| Click cell | Populated, primary-selected | none | Open file picker (replace) |
-| Click cell | Any | ⌘ / Ctrl | Toggle this cell in the multi-selection |
-| Click stage backdrop / handles overlay container | n/a | none | Clear selection |
-| `Escape` (no input focused) | n/a | none | Clear selection |
-| Drag inside cell | Populated | none | Reposition image (offsetX/Y) |
-| Drag inside cell | Populated | Shift | Move cell to drop target (cell → swap, whitespace → snap to empty rect) |
-| Drag E/W/N/S handle | Primary cell | none | Edge resize (cell pair) |
-| Drag corner handle | Primary cell | none | Track redistribute (entire band) |
-| Wheel over cell | Populated | none | Zoom image (`cell.scale`) |
-| `Delete` / `Backspace` | Cells selected | none | Remove every selected cell |
-| ⌘M | 2+ cells selected | n/a | Merge into the bounding rect (primary's image survives) |
-| ⌘E | n/a | n/a | Export |
-| ⌘Z / ⌘⇧Z | n/a | n/a | Undo / redo |
-| Right-click cell | Any | n/a | Open context menu (Upload, Split rows/cols, Delete; multi-select shows Merge / Sync shape / Delete-all) |
-| Right-click stage | Whitespace | n/a | Native browser menu (no in-app override) |
-| Click Upload / Export | n/a | n/a | Disabled while either upload or export is in flight |
+| Click cell | Any (empty or populated) | none | Focus the cell. **No file picker on single click.** |
+| Click cell | Already primary-selected | none | No-op (cell stays focused). |
+| Click cell | Any | Shift | Toggle this cell in the multi-selection. |
+| Double-click cell | Any | none | Open the file picker. Guarded — rapid extra clicks are dropped while the picker is open. |
+| Drag inside cell | Populated | none | Reposition image (offsetX/Y). |
+| Drag inside cell | Populated | Shift | Drop on another cell → `SWAP_CELLS` (images only). |
+| Drag E/W/N/S handle | Primary cell | none | Edge resize (cell pair). |
+| Drag corner handle | Primary cell | none | Track redistribute (entire band). |
+| Wheel over cell | Populated | none | Zoom image (`cell.scale`). |
+| Drag watermark / text overlay | n/a | none | Move overlay; `x`/`y` updated live. |
+| Click watermark / text overlay | n/a | none | Select it; Inspector pivots (Container / Canvas tab). |
+| Click stage backdrop | n/a | none | Clear cell + text-layer + watermark selection. |
+| Right-click cell | Any | n/a | Context menu — Upload, Copy/Paste style, Split rows/cols, Delete; multi-select shows Merge / Sync shape / Copy / Paste to N / Delete-all. |
+| Right-click cell | Any | n/a | Does **not** open the file picker (mousedown bails on `e.button !== 0`). |
+| Right-click stage | Whitespace | n/a | Native browser menu (no in-app override). |
+| `Escape` (no input focused) | n/a | n/a | Clears focus in priority order: text layer → watermark → cells. |
+| `Delete` / `Backspace` | Text layer selected | n/a | Remove the text layer. |
+| `Delete` / `Backspace` | Cells selected | n/a | Remove every selected cell. |
+| ⌘M | 2+ cells selected | n/a | Merge into the bounding rect (primary's image survives). |
+| ⌘E | n/a | n/a | Export. |
+| ⌘Z / ⌘⇧Z | n/a | n/a | Undo / redo. |
+| Click Upload / Export | n/a | n/a | Disabled while either upload or export is in flight. |
+| Templates list — single-click | n/a | n/a | Apply the template. |
+| Templates list — double-click name | n/a | n/a | Inline rename (Enter saves via `Templates.rename`, Esc cancels). |
 
 ---
 
@@ -357,11 +389,15 @@ The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The
 | Container shapes | `state/shapes.ts:shapeCSS` | `renderer/shapes.py:make_container_mask` |
 | Per-cell shapes | `state/shapes.ts:cellShapeCSS` + `Inspector/CellTab` picker | same `make_container_mask`, gated in `pillow_renderer.py` |
 | Image fit modes (native / cover / contain / fill) | `Inspector/CellTab` Seg + inline `<img>` style | `renderer/cells.py:fit_dims` + `compose_cell` |
-| CSS filters | inline `style={{ filter }}` | `renderer/filters.py:apply_css_filter` |
-| Cell selection (single + multi) | `state/reducer.ts:SELECT` / `SELECT_TOGGLE`, `StageCanvas.tsx:onCellMouseDown` | n/a |
-| Click outside → deselect | `StageCanvas.tsx:onStageMouseDown`, `Escape` keybind in `App.tsx` | n/a |
-| Click rules (empty → picker, populated unfocused → focus, populated focused → picker) | `dragRef.{wasPrimary,cmdOrCtrl}` checked in mouseup | n/a |
-| Cell drag (reposition / swap / shift-move / shift-to-whitespace) | `StageCanvas.tsx:onCellMouseDown` + window listeners + `pointToGridSlot` | n/a |
+| CSS filters (legacy string) | inline `style={{ filter }}` | `renderer/filters.py:apply_css_filter` |
+| Per-cell filter sliders (structured `cell.filters`) | `state/reducer.ts:filtersToCss` / `cssToFilters` + filter rows in `Inspector/CellTab.tsx` | reducer serialises back to the legacy CSS string consumed by `filters.py` |
+| Batch cell editing (multi-select) | `state/reducer.ts:UPDATE_CELLS` + `Inspector/CellTab.tsx` (hides Position / Split / image upload when multi) | n/a |
+| Copy / paste cell style | `state/styleClipboard.ts` + context-menu items in `StageCanvas.tsx:buildContextMenu` | n/a |
+| Cell selection (single + multi) | `state/reducer.ts:SELECT` / `SELECT_TOGGLE`, `StageCanvas.tsx:onCellMouseDown` (shift = toggle) | n/a |
+| Click outside → deselect | `StageCanvas.tsx:onStageMouseDown`, `Escape` keybind in `App.tsx` (text → watermark → cells) | n/a |
+| Click rule (single click only focuses; double-click opens picker, debounced) | `dragRef.{wasPrimary, shift}` checked in mouseup; `pickerOpenRef` guard in `uploadToCell` | n/a |
+| Right-click never opens picker | `onCellMouseDown` bails on `e.button !== 0` | n/a |
+| Cell drag (reposition / shift = image swap) | `StageCanvas.tsx:onCellMouseDown` + window listeners; `SWAP_CELLS` on drop | n/a |
 | Wheel zoom inside a cell | `CellView.onWheel` → `UPDATE_CELL { scale }` | scale baked in by `compose_cell` |
 | Edge resize (cell pair) | `StageCanvas.tsx:onHandleDown` edge branch + `EDGE_RESIZE` | `cell_box(...dx, dy, dw, dh)` |
 | Corner resize (track redistribute) | `StageCanvas.tsx:onHandleDown` corner branch + `RESIZE_TRACKS` | `grid_tracks(...col_sizes, row_sizes)` |
@@ -379,9 +415,16 @@ The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The
 | Multi-image upload from a cell | `StageCanvas.tsx:uploadToCell` (multi-file) → `FILL_EMPTY_NO_GROW` | `/api/images` per file |
 | Cover-fit initial scale on upload | `coverFitScale` in `state/reducer.ts`, called from upload paths | n/a |
 | Container background image | `Inspector/ContainerTab` upload + `<img>` in board; click the populated row to re-pick | `renderer/pillow_renderer.py:_fit_image` |
-| Output filename + format (PNG / JPG / WebP / SVG) | `Inspector/OutputTab` File section; default name auto-generated by `state/reducer.ts:generateFilename`, regenerated on `REPLACE` | response `Content-Disposition` is ignored; frontend owns the name. SVG path is a base64-PNG `<image>` wrapper (`pillow_renderer.py:_encode`) |
+| Container bg blur + flat-colour overlay | `Container.bgBlur` (CSS `filter: blur`) + overlay `<div>` between bg and cells | `pillow_renderer.py` runs `ImageFilter.GaussianBlur(radius * scale)` on the bg image and alpha-composites a `bgOverlayColor × bgOverlayOpacity` layer before the cell loop |
+| Container border (canvas matches export) | top-most shape-clipped overlay `<div>` inside `.board` (no longer an inset boxShadow on `.board` itself, which was hidden by children) | `renderer/shapes.py:stroke_container` (unchanged) |
+| Watermark | `state/reducer.ts:SET_WATERMARK` / `SELECT_WATERMARK`, `Inspector/ContainerTab` Watermark section, `StageCanvas:WatermarkOverlay` (mouse-draggable, click-to-select) | `renderer/overlays.py:composite_watermark` (rasterises text via `_load_font(family, size, weight)` or scales the cached image at `sizePx * scale`) |
+| Text overlays (4 z-bands) | `state/reducer.ts:ADD/UPDATE/REMOVE/REORDER_TEXT_LAYER`, `Inspector/CanvasTab.tsx` (NEW) for per-layer editing, `StageCanvas:TextLayersBand` (clipped) + `UnclippedTextBand` (siblings of `.board` for behind-/in-front-of-container), shared `useDispatchedFractionDrag` | `renderer/overlays.py:composite_text_layer` + paint order in `pillow_renderer.py` (behind-cells before cells, in-front-of-cells before container clip, behind-container/in-front-of-container outside the clip) |
+| Layers panel includes text layers | `LeftPanel.tsx` Layers section iterates `state.textLayers` first then cells; "+" buttons add a text layer or a cell | n/a |
+| Heart silhouette parity | `state/shapes.ts` SVG path | `renderer/shapes.py` samples the same four cubic beziers at 64 steps each |
+| Output filename + format (PNG / JPG / WebP / SVG) | `Inspector/OutputTab` File section; default name auto-generated by `state/reducer.ts:generateFilename` → `PG_YYYYMMDD_HHMMSS`, regenerated on `RESET` / `REPLACE` / `APPLY_PRESET` | response `Content-Disposition` is ignored; frontend owns the name. SVG path is a base64-PNG `<image>` wrapper (`pillow_renderer.py:_encode`) |
 | Save folder + filename dedup | `api/folder.ts` (FSA + IndexedDB); `writeBlobToFolder` walks `_1`, `_2`, … and returns the actual saved name | n/a |
 | Disable Upload / Export while busy | `App.tsx:uploading` + `exporting` flags → `TopBar` `busy` prop | n/a |
-| Templates | `state/templates.ts` (localStorage) + `LeftPanel` | rehydrates previews via `GET /api/images/{hash}` |
+| Templates | `state/templates.ts` (localStorage) + `LeftPanel` (delete confirmation via `<Modal>`, `<TemplateRow>` with double-click rename → `Templates.rename`) | rehydrates cell + bg-image + watermark-image previews via `GET /api/images/{hash}` |
+| Shuffle defaults to live cell count | `LeftPanel.tsx` useEffect syncs `randRaw` to `state.cells.length` on every change | n/a |
 | Undo / redo | `state/history.ts` + ⌘Z keybinds in `App.tsx` | n/a |
 | Theme | `App.tsx` toggles `data-theme` on `<html>`; tokens in `styles/tokens.css` | n/a |
