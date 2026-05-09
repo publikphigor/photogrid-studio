@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus, Save, Shuffle, Trash2 } from 'lucide-react';
 import type { Action, CellImageRef, PhotoGridState } from '@/types';
 import { LAYOUT_PRESETS } from '@/state/presets';
 import { Templates, type SavedTemplate } from '@/state/templates';
 import { imageBlobUrl } from '@/api/client';
+import { Modal } from './Modal';
+import { Check } from './controls/Check';
 import { PresetMini } from './PresetMini';
 
 interface Props {
@@ -11,25 +13,32 @@ interface Props {
   dispatch: (a: Action) => void;
 }
 
+type ShuffleMode = 'random' | 'squares' | 'equal';
+
+const MAX_RAND_CELLS = 200;
+
 export function LeftPanel({ state, dispatch }: Props) {
   const [saved, setSaved] = useState<SavedTemplate[]>([]);
   const [randRaw, setRandRaw] = useState('5');
-  const [squaresOnly, setSquaresOnly] = useState(false);
-  const randCount = (() => {
+  const [mode, setMode] = useState<ShuffleMode>('random');
+  const [saveOpen, setSaveOpen] = useState(false);
+  const randCount = useMemo(() => {
     const n = Number.parseInt(randRaw, 10);
     if (!Number.isFinite(n)) return 1;
-    return Math.max(1, Math.min(200, n));
-  })();
+    return Math.max(1, Math.min(MAX_RAND_CELLS, n));
+  }, [randRaw]);
 
   useEffect(() => {
     setSaved(Templates.list());
   }, []);
 
-  const onSaveTemplate = () => {
-    const name = window.prompt('Template name', `Template ${saved.length + 1}`);
-    if (name == null) return;
-    Templates.save(name, state);
-    setSaved(Templates.list());
+  const onShuffle = () => {
+    dispatch({
+      type: 'GENERATE_RANDOM_LAYOUT',
+      cellCount: randCount,
+      squaresOnly: mode === 'squares',
+      equal: mode === 'equal',
+    });
   };
 
   const onApplyTemplate = async (tpl: SavedTemplate) => {
@@ -88,7 +97,7 @@ export function LeftPanel({ state, dispatch }: Props) {
           ))}
         </div>
 
-        <div className="pane-header">Random</div>
+        <div className="pane-header">Shuffle</div>
         <div className="px-3 py-2 pb-3.5 flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <input
@@ -98,35 +107,76 @@ export function LeftPanel({ state, dispatch }: Props) {
               pattern="[0-9,.]*"
               value={randRaw}
               onChange={(e) => setRandRaw(e.target.value.replace(/[^0-9]/g, ''))}
-              style={{ width: 52 }}
-              title="Number of cells (1-200)"
+              style={{ width: 56 }}
+              title={`Number of cells (1-${MAX_RAND_CELLS})`}
+              aria-label="Cell count"
             />
             <button
               className="btn"
               style={{ flex: 1 }}
-              onClick={() =>
-                dispatch({
-                  type: 'GENERATE_RANDOM_LAYOUT',
-                  cellCount: randCount,
-                  squaresOnly,
-                })
+              onClick={onShuffle}
+              title={
+                mode === 'equal'
+                  ? `Build a uniform grid of ${randCount} equal cells (existing images stay)`
+                  : mode === 'squares'
+                    ? 'Generate a rect-only random layout (existing images stay)'
+                    : 'Generate a random layout (existing images stay)'
               }
-              title="Generate a random layout with this many cells"
             >
-              <Shuffle size={14} /> Generate layout
+              <Shuffle size={14} /> Shuffle
             </button>
           </div>
-          <label
-            className="flex items-center gap-2"
-            style={{ fontSize: 11.5, color: 'var(--text-2)', cursor: 'pointer' }}
+          <div
+            role="radiogroup"
+            aria-label="Shuffle mode"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr',
+              gap: 4,
+              background: 'var(--panel-2)',
+              border: '1px solid var(--line)',
+              borderRadius: 6,
+              padding: 2,
+            }}
           >
-            <input
-              type="checkbox"
-              checked={squaresOnly}
-              onChange={(e) => setSquaresOnly(e.target.checked)}
-            />
-            Squares only (rect cells, no shape variety)
-          </label>
+            {(
+              [
+                { id: 'random', label: 'Random' },
+                { id: 'squares', label: 'Rect' },
+                { id: 'equal', label: 'Equal' },
+              ] as { id: ShuffleMode; label: string }[]
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                role="radio"
+                aria-checked={mode === opt.id}
+                onClick={() => setMode(opt.id)}
+                title={
+                  opt.id === 'equal'
+                    ? 'Uniform NxM grid; cell count is matched to a near-square factorization.'
+                    : opt.id === 'squares'
+                      ? 'Rect cells only; no shape variety.'
+                      : 'Mondrian-style random subdivision with mood-based shapes.'
+                }
+                style={{
+                  height: 24,
+                  borderRadius: 4,
+                  fontSize: 11.5,
+                  border: 0,
+                  background: mode === opt.id ? 'var(--seg-active-bg)' : 'transparent',
+                  color: mode === opt.id ? 'var(--text)' : 'var(--text-3)',
+                  cursor: 'pointer',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {mode === 'equal' && (
+            <p style={{ margin: 0, fontSize: 11, color: 'var(--text-4)', lineHeight: 1.5 }}>
+              Picks a near-square NxM grid. e.g. 100 → 10×10, 12 → 4×3, 7 → 7×1.
+            </p>
+          )}
         </div>
 
         <div className="pane-header">
@@ -135,7 +185,7 @@ export function LeftPanel({ state, dispatch }: Props) {
           <button
             className="icon-btn"
             style={{ width: 22, height: 22 }}
-            onClick={onSaveTemplate}
+            onClick={() => setSaveOpen(true)}
             title="Save current as template"
           >
             <Save size={13} />
@@ -213,6 +263,92 @@ export function LeftPanel({ state, dispatch }: Props) {
           ))}
         </div>
       </div>
+
+      <SaveTemplateModal
+        open={saveOpen}
+        onClose={() => setSaveOpen(false)}
+        defaultName={`Template ${saved.length + 1}`}
+        onConfirm={(name, includeImages) => {
+          Templates.save(name, state, { includeImages });
+          setSaved(Templates.list());
+          setSaveOpen(false);
+        }}
+      />
     </div>
+  );
+}
+
+function SaveTemplateModal({
+  open,
+  onClose,
+  defaultName,
+  onConfirm,
+}: {
+  open: boolean;
+  onClose: () => void;
+  defaultName: string;
+  onConfirm: (name: string, includeImages: boolean) => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const [includeImages, setIncludeImages] = useState(false);
+
+  // Reset form fields each time the modal opens so a stale name from a prior
+  // session doesn't leak into the next save.
+  useEffect(() => {
+    if (open) {
+      setName(defaultName);
+      setIncludeImages(false);
+    }
+  }, [open, defaultName]);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onConfirm(trimmed, includeImages);
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Save template"
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={submit} disabled={!name.trim()}>
+            Save
+          </button>
+        </>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 11.5, color: 'var(--text-3)' }}>Name</span>
+          <input
+            type="text"
+            value={name}
+            data-autofocus
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="My collage layout"
+          />
+        </label>
+        <Check checked={includeImages} onChange={setIncludeImages}>
+          Save with images
+        </Check>
+        <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-4)', lineHeight: 1.55 }}>
+          {includeImages
+            ? 'Photos travel with the template — handy for proofs you want to reload exactly as-is.'
+            : 'Layout only — cells reload empty so you can drop in a fresh set of photos.'}
+        </p>
+      </div>
+    </Modal>
   );
 }

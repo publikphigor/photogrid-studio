@@ -10,6 +10,13 @@ export interface SavedTemplate {
   state: PhotoGridState;
 }
 
+export interface SaveOptions {
+  /** Keep cell images (and the container's bgImage) in the saved snapshot.
+   *  When false (the default) every cell reloads empty — useful for keeping a
+   *  layout reusable across photo sets without bloating localStorage. */
+  includeImages?: boolean;
+}
+
 function read(): SavedTemplate[] {
   try {
     const raw = localStorage.getItem(KEY);
@@ -29,34 +36,43 @@ function write(list: SavedTemplate[]): void {
   }
 }
 
-/** Strip transient fields and large preview blobs that shouldn't go into localStorage. */
-function clean(state: PhotoGridState): PhotoGridState {
+/** Strip transient fields and large preview blobs that shouldn't go into localStorage.
+ *  When `includeImages` is false (the default) cell images are also removed so the
+ *  template is purely a layout/style snapshot that can host any new photo set. */
+function clean(state: PhotoGridState, includeImages: boolean): PhotoGridState {
   return {
     ...state,
     selectedCellIds: [],
     canvas: { zoom: 1 },
-    cells: state.cells.map((c) =>
-      c.image
-        ? {
-            ...c,
-            // Keep the hash + dimensions so a reload can re-resolve from backend cache,
-            // but drop the local previewUrl (object URL — won't survive reload anyway).
-            image: { ...c.image, previewUrl: undefined },
-          }
-        : c,
-    ),
+    container: includeImages
+      ? {
+          ...state.container,
+          bgImage: state.container.bgImage
+            ? { ...state.container.bgImage, previewUrl: undefined }
+            : null,
+        }
+      : { ...state.container, bgImage: null },
+    cells: state.cells.map((c) => {
+      if (!c.image) return c;
+      if (!includeImages) {
+        return { ...c, image: null, offsetX: 0, offsetY: 0, scale: 1, rotation: 0 };
+      }
+      // Keep the hash + dimensions so a reload can re-resolve from backend cache,
+      // but drop the local previewUrl (object URL — won't survive reload anyway).
+      return { ...c, image: { ...c.image, previewUrl: undefined } };
+    }),
   };
 }
 
 export const Templates = {
   list: read,
-  save(name: string, state: PhotoGridState): SavedTemplate {
+  save(name: string, state: PhotoGridState, opts: SaveOptions = {}): SavedTemplate {
     const all = read();
     const tpl: SavedTemplate = {
       id: `tpl_${Date.now().toString(36)}`,
       name: name.trim() || 'Untitled',
       createdAt: Date.now(),
-      state: clean(state),
+      state: clean(state, opts.includeImages === true),
     };
     all.unshift(tpl);
     write(all.slice(0, 50)); // hard cap

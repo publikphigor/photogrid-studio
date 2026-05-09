@@ -824,6 +824,57 @@ function jitterInt(range: [number, number]): number {
   return Math.round(lo + Math.random() * (hi - lo));
 }
 
+/** Pick a (cols, rows) factorization for `n` that minimises the deviation
+ *  from a square grid for the current aspect ratio. We prefer pairs whose
+ *  product equals `n`; if none exists we fall back to the first pair whose
+ *  product is ≥ `n`. */
+function pickEqualGrid(n: number, aspect: number): { cols: number; rows: number } {
+  const N = Math.max(1, Math.floor(n));
+  // Exact factor pairs first.
+  const exact: Array<{ cols: number; rows: number; score: number }> = [];
+  for (let cols = 1; cols <= N; cols += 1) {
+    if (N % cols !== 0) continue;
+    const rows = N / cols;
+    // Score: how close is (cols/rows) to the target aspect?
+    const ratio = cols / rows;
+    const score = Math.abs(Math.log(ratio / aspect));
+    exact.push({ cols, rows, score });
+  }
+  if (exact.length) {
+    exact.sort((a, b) => a.score - b.score);
+    return { cols: exact[0].cols, rows: exact[0].rows };
+  }
+  // Should be unreachable for N >= 1 since 1*N is always a factor.
+  return { cols: N, rows: 1 };
+}
+
+/** Uniform NxM layout with all-equal cells. */
+export function generateEqualLayout(
+  cellCount: number,
+  aspect = 1,
+): {
+  cols: number;
+  rows: number;
+  colSizes: number[];
+  rowSizes: number[];
+  cells: { c: number; r: number; cs: number; rs: number }[];
+} {
+  const { cols, rows } = pickEqualGrid(cellCount, aspect);
+  const cells: { c: number; r: number; cs: number; rs: number }[] = [];
+  for (let r = 1; r <= rows; r += 1) {
+    for (let c = 1; c <= cols; c += 1) {
+      cells.push({ c, r, cs: 1, rs: 1 });
+    }
+  }
+  return {
+    cols,
+    rows,
+    colSizes: new Array(cols).fill(1),
+    rowSizes: new Array(rows).fill(1),
+    cells,
+  };
+}
+
 /** Recursive Mondrian-style subdivision. Starts with a single 1×1 rect, then
  *  repeatedly splits the largest rect (horizontally or vertically along the
  *  longer axis with a 30–70 % ratio) until N rects exist. Distinct x/y edges
@@ -1278,31 +1329,94 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       };
     }
     case 'GENERATE_RANDOM_LAYOUT': {
-      const layout = generateRandomLayout(action.cellCount);
+      // "Equal" implies a uniform NxM grid; "squaresOnly" is treated as a
+      // strict-rect superset of equal (rect cells but Mondrian-style sizing).
+      const isEqual = action.equal === true;
+      const isFlat = isEqual || action.squaresOnly === true;
+      // Ratio (w/h) used for the equal-cells aspect picker. Honour the
+      // current container aspect instead of forcing 1:1 so a 16:9 container
+      // gets 16:9-friendly cell counts.
+      const currentAspect = (() => {
+        const a = ASPECT_RATIOS.find((x) => x.id === state.container.aspect);
+        if (!a || !a.h) return 1;
+        return a.w / a.h;
+      })();
+      const layout = isEqual
+        ? generateEqualLayout(action.cellCount, currentAspect)
+        : generateRandomLayout(action.cellCount);
       const mood = pickMood(action.squaresOnly === true);
-      const cells: Cell[] = layout.cells.map((c) => ({
-        ...blankCell(c.c, c.r),
-        colSpan: c.cs,
-        rowSpan: c.rs,
-        shape: action.squaresOnly ? 'rect' : pickFromArray(mood.cellShapes),
-        cellRadius: action.squaresOnly
-          ? 0
-          : mood.cellRadiusRange[0] +
-            Math.random() * (mood.cellRadiusRange[1] - mood.cellRadiusRange[0]),
-      }));
+
+      // Preserve existing images: walk the new cells in row-major order and
+      // hand each an image from the previous cell list (also row-major). This
+      // keeps photos in place across re-shuffles even when the cell count
+      // changes (extra new cells stay empty; surplus old images are dropped).
+      const oldImages = state.cells
+        .slice()
+        .sort((a, b) => a.rowStart - b.rowStart || a.colStart - b.colStart)
+        .map((c) => ({
+          image: c.image,
+          fit: c.fit,
+          offsetX: c.offsetX,
+          offsetY: c.offsetY,
+          scale: c.scale,
+          rotation: c.rotation,
+          filter: c.filter,
+        }))
+        .filter((c) => c.image);
+
+      const newCells: Cell[] = layout.cells
+        .slice()
+        .sort((a, b) => a.r - b.r || a.c - b.c)
+        .map((c, i) => {
+          const inherited = oldImages[i];
+          return {
+            ...blankCell(c.c, c.r),
+            colSpan: c.cs,
+            rowSpan: c.rs,
+            shape: isFlat ? 'rect' : pickFromArray(mood.cellShapes),
+            cellRadius: isFlat
+              ? 0
+              : mood.cellRadiusRange[0] +
+                Math.random() * (mood.cellRadiusRange[1] - mood.cellRadiusRange[0]),
+            ...(inherited
+              ? {
+                  image: inherited.image,
+                  fit: inherited.fit,
+                  offsetX: inherited.offsetX,
+                  offsetY: inherited.offsetY,
+                  scale: inherited.scale,
+                  rotation: inherited.rotation,
+                  filter: inherited.filter,
+                }
+              : {}),
+          };
+        });
+
       return {
         ...state,
         container: {
           ...state.container,
-          shape: action.squaresOnly ? 'rect' : pickFromArray(mood.containerShapes),
-          aspect: action.squaresOnly ? '1:1' : pickFromArray(mood.aspects),
-          gap: jitterInt(mood.gap),
-          padding: jitterInt(mood.padding),
-          cornerRadius: action.squaresOnly
-            ? 0
-            : mood.containerRadiusRange[0] +
-              Math.random() *
-                (mood.containerRadiusRange[1] - mood.containerRadiusRange[0]),
+          // Equal-cells mode keeps the user's current container aspect/shape
+          // — they explicitly asked for a tidy uniform grid.
+          shape: isEqual
+            ? state.container.shape
+            : action.squaresOnly
+              ? 'rect'
+              : pickFromArray(mood.containerShapes),
+          aspect: isEqual
+            ? state.container.aspect
+            : action.squaresOnly
+              ? '1:1'
+              : pickFromArray(mood.aspects),
+          gap: isEqual ? state.container.gap : jitterInt(mood.gap),
+          padding: isEqual ? state.container.padding : jitterInt(mood.padding),
+          cornerRadius: isEqual
+            ? state.container.cornerRadius
+            : action.squaresOnly
+              ? 0
+              : mood.containerRadiusRange[0] +
+                Math.random() *
+                  (mood.containerRadiusRange[1] - mood.containerRadiusRange[0]),
         },
         grid: {
           cols: layout.cols,
@@ -1310,7 +1424,7 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
           colSizes: layout.colSizes,
           rowSizes: layout.rowSizes,
         },
-        cells,
+        cells: newCells,
         selectedCellIds: [],
       };
     }

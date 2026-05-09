@@ -146,6 +146,11 @@ export type Action =
       type: 'GENERATE_RANDOM_LAYOUT';
       cellCount: number;
       squaresOnly?: boolean;
+      /** Force a uniform NxM grid of equal cells. Implies squaresOnly visually
+       *  (rect cells, no jitter). The picker chooses dimensions that match
+       *  cellCount as closely as possible while keeping the cell aspect close
+       *  to a square. */
+      equal?: boolean;
       seed?: number;
     }
   | { type: 'SET_ZOOM'; zoom: number }
