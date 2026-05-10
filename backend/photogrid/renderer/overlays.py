@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from ..cache.disk import find_cached
 from ..logging_setup import log
@@ -266,6 +266,7 @@ def composite_watermark(base: Image.Image, watermark: Watermark | None, scale: i
     try:
         with Image.open(cached) as raw:
             raw.load()
+            raw = ImageOps.exif_transpose(raw)
             img = raw.convert("RGBA")
     except Exception as e:
         log.warning("watermark.image.failed", error=str(e))

@@ -6,7 +6,7 @@ import asyncio
 import io
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from ..cache.disk import find_cached
 from ..config import settings
@@ -52,6 +52,11 @@ def _open_source(cell: Cell) -> Image.Image | None:
         raise FileNotFoundError(cell.image.hash)
     img = Image.open(cached)
     img.load()
+    # Honour EXIF orientation so the rendered pixels match what the browser's
+    # createImageBitmap previewed on the canvas. Without this, iPhone JPEGs with
+    # orientation tags 3/6/8 paint sideways/upside-down on export under
+    # cover/contain/fill fits.
+    img = ImageOps.exif_transpose(img)
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGBA")
     return img
@@ -91,6 +96,7 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             try:
                 with Image.open(bg_path) as bgi:
                     bgi.load()
+                    bgi = ImageOps.exif_transpose(bgi)
                     bg_rgba = bgi.convert("RGBA")
                 bg_tile = _fit_image(bg_rgba, W, H, cont.bgImageFit)
                 if cont.bgBlur and cont.bgBlur > 0:

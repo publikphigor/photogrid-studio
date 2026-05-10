@@ -5,7 +5,7 @@ import mimetypes
 
 from fastapi import APIRouter, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
-from PIL import Image
+from PIL import Image, ImageOps
 
 from ..cache import DiskCache, find_cached
 from ..config import settings
@@ -68,8 +68,13 @@ async def upload_image(file: UploadFile) -> UploadResponse:
         raise HTTPException(status_code=500, detail="upload failed") from e
 
     # Probe dimensions (Pillow handles HEIC via pillow-heif registered in renderer).
+    # Apply EXIF transpose so reported (w, h) match the orientation the browser's
+    # createImageBitmap will use for the preview AND what the renderer composites
+    # at export time. Without this, iPhone JPEGs that should be portrait would
+    # report landscape dimensions and the frontend's IMG box would mis-size.
     try:
         with Image.open(stored.path) as img:
+            img = ImageOps.exif_transpose(img)
             w, h = img.size
     except Exception as e:
         # Don't poison the cache with broken files.
