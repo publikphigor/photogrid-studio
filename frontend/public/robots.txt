@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://photogrid.studio/sitemap.xml
+Sitemap: https://photogrid.koladeleolaitan.com/sitemap.xml
