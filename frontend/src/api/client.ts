@@ -50,42 +50,15 @@ export async function imageBlobUrl(hash: string): Promise<string | null> {
   return URL.createObjectURL(blob);
 }
 
-interface PreviewBlob {
-  blob: Blob;
-  url: string;
-  w: number;
-  h: number;
-}
-
-async function makePreview(file: File, max = 1024): Promise<PreviewBlob> {
-  const bitmap = await createImageBitmap(file);
-  const w = bitmap.width;
-  const h = bitmap.height;
-  const scale = Math.min(1, max / Math.max(w, h));
-  const dw = Math.max(1, Math.round(w * scale));
-  const dh = Math.max(1, Math.round(h * scale));
-  const canvas =
-    typeof OffscreenCanvas !== 'undefined'
-      ? new OffscreenCanvas(dw, dh)
-      : Object.assign(document.createElement('canvas'), { width: dw, height: dh });
-  const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(bitmap, 0, 0, dw, dh);
-  const blob =
-    canvas instanceof OffscreenCanvas
-      ? await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 })
-      : await new Promise<Blob>((resolve) =>
-          (canvas as HTMLCanvasElement).toBlob((b) => resolve(b!), 'image/jpeg', 0.85),
-        );
-  return { blob, url: URL.createObjectURL(blob), w, h };
-}
-
-/** Picks a file from the user, uploads to the backend, returns the cell image ref.
- *  `w/h` are the ORIGINAL pixel dimensions (from the backend probe). The
- *  `previewUrl` points to a downscaled preview, but the cell renders the IMG
- *  box at original w×h so the on-screen layout matches what the backend
- *  produces during export. */
+/** Picks a file from the user, uploads it, returns the cell image ref.
+ *  `w/h` are the ORIGINAL pixel dimensions (from the backend probe; the
+ *  backend has already applied EXIF orientation, so they match what the
+ *  browser sees). `previewUrl` points DIRECTLY at the original file via
+ *  `URL.createObjectURL` — no downscale, no re-encode — so the on-screen
+ *  cell renders at the full source resolution and matches the export
+ *  pixel-for-pixel. Modern browsers honour EXIF orientation on `<img>` by
+ *  default (CSS `image-orientation: from-image`). */
 export async function ingestFile(file: File): Promise<CellImageRef> {
-  const preview = await makePreview(file);
   const upload = await uploadImage(file);
   return {
     hash: upload.hash,
@@ -93,7 +66,7 @@ export async function ingestFile(file: File): Promise<CellImageRef> {
     w: upload.w,
     h: upload.h,
     mime: upload.mime,
-    previewUrl: preview.url,
+    previewUrl: URL.createObjectURL(file),
   };
 }
 

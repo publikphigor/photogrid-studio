@@ -9,9 +9,7 @@
     box-sizing: border-box;
   }
   html,
-  body,
-  #root {
-    height: 100%;
+  body {
     margin: 0;
   }
   body {
@@ -23,6 +21,15 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     letter-spacing: -0.005em;
+  }
+  /* Editor route fills the viewport and locks scroll. Landing route scrolls
+   * normally. main.tsx sets data-mode="app" before React renders. */
+  html[data-mode='app'],
+  html[data-mode='app'] body,
+  html[data-mode='app'] #root {
+    height: 100%;
+  }
+  html[data-mode='app'] body {
     overflow: hidden;
   }
   ::selection {

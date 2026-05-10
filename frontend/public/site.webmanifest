@@ -1,0 +1,14 @@
+{
+  "name": "PhotoGrid Studio",
+  "short_name": "PhotoGrid",
+  "description": "Make photo grids in your browser. Export at the full size of your photos — no quality loss.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0b0c",
+  "theme_color": "#0b0b0c",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
