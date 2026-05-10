@@ -364,6 +364,8 @@ Right-clicking a cell that isn't already in the multi-selection replaces the sel
 - **Backend Dockerfile** is also multi-stage: a build stage installs from `pyproject.toml` (with `[vips]` extra) into `/install`; the runtime stage is `python:3.12-slim` with only the runtime libs (`libmagic1`, `libheif1`, `libvips42`, etc.). Runs as a non-root `app` user. `HEALTHCHECK` curls `/api/healthz`.
 - **Compose** uses one named volume (`photogrid-cache`) mounted at `/var/cache/photogrid` in the backend. The frontend `depends_on: backend: condition: service_healthy` so it only comes up after the API is ready.
 - **Prod overlay** (`docker-compose.prod.yml`) switches the backend to gunicorn, adds resource limits (2 GB / 2 CPU on backend, 256 MB / 0.5 CPU on frontend), and rotates JSON logs at 10 MB × 5.
+- **Production hosting.** A single Linux VPS runs the same compose stack with the prod overrides. **Caddy** on the host (not in a container) reverse-proxies a public subdomain to the local services: `/api/*` → `localhost:8000`, everything else → `localhost:8080`. Caddy provisions and renews Let's Encrypt certs automatically. UFW exposes only 22, 80, and 443 publicly; the raw service ports stay internal. The `photogrid-cache` named volume and the host's `.env` persist across deploys.
+- **Continuous deployment.** `.github/workflows/deploy.yml` runs on push to `main`. It SSHes into the VPS using a deploy key (`DEPLOY_HOST`, `DEPLOY_SSH_KEY`, optional `DEPLOY_USER` / `DEPLOY_PORT` / `DEPLOY_PATH` GitHub Secrets), then `git fetch && git reset --hard origin/main && make prod-up`. A `concurrency` block prevents two deploys from racing. The host `.env` is gitignored — CI relies on it persisting on the VPS, never on being recreated from CI.
 
 ---
 

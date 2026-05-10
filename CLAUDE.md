@@ -73,6 +73,26 @@ Other endpoints: `HEAD /api/images/{hash}` (existence check) and
 `GET /api/images/{hash}` (used to rehydrate previews when loading a saved
 template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, file_count} }`.
 
+## Hosting & deploy
+
+Production runs on a single Linux VPS with the same `docker-compose.yml` +
+`docker-compose.prod.yml` stack. **Caddy** runs on the host (not in a
+container) and reverse-proxies a public subdomain to the local services:
+
+- `/api/*` → `localhost:8000` (backend)
+- everything else → `localhost:8080` (frontend)
+
+Caddy auto-manages Let's Encrypt certificates. UFW exposes only 22, 80, and
+443 publicly; 8000 / 8080 are internal. The `photogrid-cache` named volume
+and the host's `.env` survive every deploy.
+
+**Continuous deployment.** `.github/workflows/deploy.yml` triggers on push to
+`main`: it SSHes into the VPS (deploy key in GitHub Secrets — `DEPLOY_HOST`,
+`DEPLOY_SSH_KEY`, optional `DEPLOY_USER` / `DEPLOY_PORT` / `DEPLOY_PATH`),
+runs `git reset --hard origin/main`, then `make prod-up`. A `concurrency`
+block serializes deploys. **`.env` must NOT be checked in** — CI relies on
+the file persisting on the VPS, not on being recreated each deploy.
+
 ## Hot conventions
 
 - **Cells are absolutely positioned, not CSS grid.** `.grid-area` is just
