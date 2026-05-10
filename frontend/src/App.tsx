@@ -333,8 +333,8 @@ function Drawer({
 
 function DesktopOnlyGate() {
   return (
-    <div className="flex h-full items-center justify-center bg-bg text-text px-6">
-      <div className="max-w-sm text-center">
+    <div className="grid h-full w-full place-items-center overflow-hidden bg-bg text-text px-6">
+      <div className="w-full max-w-sm text-center break-words">
         <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-accent text-[color:var(--primary-fg)]">
           <MonitorSmartphone size={22} />
         </div>
