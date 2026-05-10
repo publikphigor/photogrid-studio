@@ -90,12 +90,25 @@ template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, 
 - **No HTML5 drag inside cells.** All in-canvas dragging is mouse-based
   (`StageCanvas.tsx → onCellMouseDown` + window mousemove/mouseup listeners).
   Modes:
-  - drag inside any populated cell → reposition image (`offsetX/Y`).
-  - shift+drag a populated cell, drop on another cell → `SWAP_CELLS`
-    (images only; positions/spans untouched). The old "drag cell to
-    whitespace to relocate" gesture was removed when shift was repurposed.
-  - shift+click → toggle this cell into the multi-selection.
-  - wheel over a populated cell → zoom the image (`cell.scale`).
+  - **plain drag inside a populated cell** → reposition image (`offsetX/Y`).
+    The image element's transform is mutated directly during the drag (no
+    React re-renders); committed via `UPDATE_CELL` on mouseup.
+  - **alt+drag** → MOVE the cell (`MOVE_CELL_DROP`). The drop target is
+    resolved on each frame via `document.elementFromPoint` (over an
+    existing cell → drop onto its grid coords) or `pointToGridSlot`
+    (whitespace → snap to its slot). A dashed drop preview rect renders
+    inside `.board` for the duration of the drag. Cells already at the
+    destination are pushed to free slots by `reflowAroundMover` (grid
+    grows in the shorter axis only when no slot exists).
+  - **plain drag inside an empty cell** → MOVE (no image to reposition).
+  - **shift+drag a populated cell**, drop on another cell → `SWAP_CELLS`
+    (images only; positions/spans untouched).
+  - **shift+click** → range-select from the primary anchor to this cell
+    (`SELECT_RANGE`). Anchor = current `selectedCellIds[0]`; row-major
+    ordering builds the picked range.
+  - **⌘/ctrl+click** → toggle this cell in/out of the multi-selection
+    (`SELECT_TOGGLE`).
+  - **wheel over a populated cell** → zoom the image (`cell.scale`).
 - **Click semantics:** single click on any cell just *focuses* it. The
   file picker opens **only on double-click**, and `pickerOpenRef` in
   `uploadToCell` debounces so a triple-click can't queue multiple OS
@@ -120,15 +133,28 @@ template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, 
   `RESIZE_TRACKS`, edge handles use `EDGE_RESIZE`. Both modes capture
   alignment lines (every other cell's edges + canvas inner edges) and render
   thin dashed guides while the dragged edge is within 4 px of any of them.
-- **Add / remove / align cleanly.** `ADD_CELL` calls `findMaxEmptyRect` and
-  fills the largest empty rectangle (only grows the grid as a last resort).
-  `REMOVE_CELL` runs `compactAfterRemoval` to drop empty tracks, expand a
-  matching-band neighbour, or extend an adjacent cell's pixel offsets.
-  `ALIGN_GRID` zeros every cell's `dx/dy/dw/dh` and absorbs leftover
-  whitespace.
-- **View Transitions** wrap `MOVE_CELL_TO_CELL` and `SWAP_CELLS` so cells
-  animate to their new slots when supported by the browser. Each cell sets
-  `viewTransitionName: cell-${id}`.
+- **Add / duplicate / remove / align cleanly.** `ADD_CELL` and
+  `DUPLICATE_CELL` both call `findMaxEmptyRect` and fill the largest empty
+  rectangle (capped to ~half the grid via `capPlacementRect` so a sparse
+  layout doesn't spawn an outsized cell). They only grow the grid when no
+  whitespace exists. `REMOVE_CELL` runs `compactAfterRemoval` to drop empty
+  tracks, expand a matching-band neighbour, or extend an adjacent cell's
+  pixel offsets. `ALIGN_GRID` zeros every cell's `dx/dy/dw/dh` and absorbs
+  leftover whitespace.
+- **`SPLIT_CELL` keeps the target's rect intact and produces equal halves.**
+  Splitting a cell with band span `S` into `N` sub-cells REPLACES the band's
+  `S` tracks with `N` tracks of equal weight = `bandTotal / N`. Each
+  sub-cell occupies exactly ONE of the new tracks → equal halves *and*
+  together they cover the same pixel rect the target had before the
+  split. Cells fully outside the band don't move. Cells crossing the band
+  have their colStart / colEnd snapped to the nearest new track boundary
+  (via cumulative-weight proportional snap); for uniform band weights
+  this is identity. **No overlap is introduced** — sub-cells live in
+  distinct grid coords, and other cells still don't share a grid rect
+  with any sub-cell.
+- **View Transitions** wrap `MOVE_CELL_DROP`, `MOVE_CELL_TO_CELL` and
+  `SWAP_CELLS` so cells animate to their new slots when supported by the
+  browser. Each cell sets `viewTransitionName: cell-${id}`.
 - **Span-based resize via the inspector** (`MOVE_CELL` / `RESIZE_CELL` from
   the number inputs) still uses `reflowAroundMover` to relocate displaced
   cells. `RESIZE_CELL` rejects when reflow would need to grow the grid.
@@ -190,6 +216,13 @@ template). `GET /api/healthz` returns `{ ok, version, cache: {used_mb, free_mb, 
   stores `upload.w / upload.h` (not the preview blob's size) in
   `CellImageRef.w/h` so the IMG box and the backend renderer agree on
   cropping. Don't accidentally swap that back to preview dims.
+- **EXIF orientation must be honoured server-side.** `api/images.py:upload`
+  applies `ImageOps.exif_transpose` when probing dimensions, and the
+  renderer's `_open_source` / bg image / watermark image opens all transpose
+  before compositing. The browser's `createImageBitmap` orients previews
+  by default, so any `Image.open` path that skips transpose will silently
+  desync canvas vs export — iPhone JPEGs with orientation 3/6/8 paint
+  rotated/flipped under cover/contain/fill fits on export.
 - **Shape masks are calibrated.** The numbers in
   `backend/photogrid/renderer/shapes.py` match the frontend's `clip-path`
   polygons. Change one, change both.

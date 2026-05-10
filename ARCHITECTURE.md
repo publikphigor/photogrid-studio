@@ -197,7 +197,9 @@ The mask functions (`renderer/shapes.py`) render at 2× scale via `ImageDraw` th
 There are three independent selection focuses, each with its own action set so the inspector can pivot to the right tab:
 
 - **Cells.** `selectedCellIds: string[]` — first id is the **primary** (inspector source-of-truth, merge survivor).
-  - `SELECT { id }` replaces; `SELECT_TOGGLE { id }` adds/removes (shift+click in the canvas or layers panel).
+  - `SELECT { id }` replaces (plain click on a non-selected cell, or single click on the layers panel).
+  - `SELECT_TOGGLE { id }` adds/removes a single cell (⌘/ctrl-click in the canvas or layers panel — native multi-select semantics).
+  - `SELECT_RANGE { id }` selects every cell in row-major order between the primary anchor and the clicked cell (shift-click in the canvas or layers panel).
 - **Text layers.** `selectedTextLayerId: string | null` — drives the Canvas tab; clicking a text layer on canvas or in the Layers panel sets it.
   - `SELECT_TEXT_LAYER { id }`.
 - **Watermark.** `selectedWatermark: boolean` — clicking the watermark on canvas sets it; the inspector pivots to the Container tab.
@@ -211,14 +213,16 @@ Multi-selected cells get the `.cell.multi-selected` modifier (outline thickens t
 
 - **`UPDATE_CELL { id, patch }`** — single-cell style patch.
 - **`UPDATE_CELLS { ids, patch }`** — fan a patch across multiple cells in a single undo step. Used by batch editing in `Inspector/CellTab` and by paste-style across the multi-selection.
-- **`ADD_CELL`** — calls `findMaxEmptyRect`, places a cell sized to the largest empty rectangle. Only grows the grid when there's no empty rect.
+- **`ADD_CELL`** — calls `findMaxEmptyRect`, places a cell sized to the largest empty rectangle (capped at ~half the grid via `capPlacementRect`). Only grows the grid when there's no empty rect.
+- **`DUPLICATE_CELL { id }`** — clones a cell's image + style into the largest available whitespace using the same placement rules as `ADD_CELL`. Position-y fields (`offsetX/Y`, `dx/dy/dw/dh`) reset on the clone so it's a clean tile. Falls back to growing the grid only when fully occupied.
 - **`REMOVE_CELL`** — runs `compactAfterRemoval`: drop empty tracks → expand same-band neighbour → extend adjacent cell's pixel offsets.
 - **`MERGE_CELLS { ids }`** — replaces the primary cell with the bounding rect of all selected cells. Pixel offsets zeroed.
 - **`SYNC_CELLS_SHAPE { ids }`** — copies the primary's `shape` + `cellRadius` onto every other selected cell.
-- **`SPLIT_CELL { id, axis, count }`** — N sub-cells along an axis; inserts `N-1` tracks; cells that intersect the band gain matching span.
-- **`SWAP_CELLS { aId, bId }`** — swaps just the *images* between two cells. Used by **shift+drag** in the canvas (replacing the old "move cell to cell"/"move cell to whitespace" flow).
+- **`SPLIT_CELL { id, axis, count }`** — N sub-cells along an axis. REPLACES the target's S band tracks with N tracks of equal weight (each = `bandTotal / N`). Each sub-cell occupies one of the N new tracks, so halves are always equal AND together cover the same pixel rect the target had before the split. Cells fully outside the band don't move. Cells crossing the band have their grid-coord endpoints snapped to the nearest new track boundary by cumulative-weight proportion; for uniform band weights this is identity. The split never introduces overlap.
+- **`SWAP_CELLS { aId, bId }`** — swaps just the *images* between two cells. Used by **shift+drag** in the canvas.
 - **`MOVE_CELL`** / **`RESIZE_CELL`** — dispatched from the inspector's number inputs. Run `reflowAroundMover`; `RESIZE_CELL` rejects if displacement would require growing the grid.
-- **`MOVE_CELL_TO_RECT`** / **`MOVE_CELL_TO_CELL`** — still in the reducer for completeness (drag-to-move mouse paths were removed when shift+drag was repurposed for image swap; these actions are now only reachable programmatically).
+- **`MOVE_CELL_DROP { id, col, row }`** — committed by **plain drag** in the canvas. Clamps `(col, row)` into the existing grid, zeroes the dragged cell's pixel offsets, and runs `reflowAroundMover` so cells already at the destination get pushed to free slots (grid grows only when no slot exists). The drop target is computed every frame during the drag (`elementFromPoint` over a cell, otherwise `pointToGridSlot`); a dashed preview rect renders inside `.board` so the user sees exactly where the cell will land.
+- **`MOVE_CELL_TO_RECT`** / **`MOVE_CELL_TO_CELL`** — still in the reducer; reachable programmatically (the inspector inputs and template apply paths can use them).
 - **`FILL_FROM_FILES`** — assigns multiple uploads to consecutive empty cells, expanding the grid if needed.
 - **`FILL_EMPTY_NO_GROW`** — multi-image cell-click upload: surplus images fill empty cells; grid never grows.
 
@@ -259,21 +263,27 @@ Two separate code paths under one set of 8 handles, picked by `dir.length === 2`
 
 `StageCanvas.tsx` owns one mousedown handler (`onCellMouseDown`) and one set of window listeners. The flow:
 
-1. **Mousedown on a cell** — records intent into a `dragRef` (a `useRef`, not state — no re-renders during drag): `{ kind, cellId, startX/Y, baseOffsetX/Y, imgEl, scale, rotation, invZoom, ghostSrc, nativeFit, wasPrimary, shift, … }`. Right- and middle-clicks (`e.button !== 0`) bail out before the ref is set, so the right-click menu can't accidentally trigger a click-as-drag.
-2. **Drag kind** is `swap` when `shiftKey` is held on a populated cell, otherwise `reposition` (used for both populated cells and the empty-cell click path).
+1. **Mousedown on a cell** — records intent into a `dragRef` (a `useRef`, not state — no re-renders during drag): `{ kind, cellId, startX/Y, baseOffsetX/Y, imgEl, scale, rotation, invZoom, ghostSrc, nativeFit, wasPrimary, wasSelected, shift, meta, alt, dropCol?, dropRow? }`. Right- and middle-clicks (`e.button !== 0`) bail out before the ref is set, so the right-click menu can't accidentally trigger a click-as-drag.
+2. **Drag kind** is decided at mousedown by modifier keys + cell state:
+   - `shift` + populated cell → `swap` (drop on another cell to swap images).
+   - `alt` (with or without an image) → `move` (relocate the cell to a new grid slot).
+   - plain drag + populated cell → `reposition` (drag the image inside the cell).
+   - plain drag + empty cell → `move` (no image to reposition).
 3. **Selection rules on mousedown:**
    - plain click on an unselected cell → `SELECT` (replace) immediately so the resize handles + drag target light up.
-   - shift+click and primary-cell click are **resolved on mouseup** so a shift+drag never leaves a dangling selection toggle.
+   - shift / meta / primary-cell clicks are **resolved on mouseup** so a drag with that modifier never leaves a dangling selection toggle.
 4. **Window mousemove** updates `curX/Y` in the ref. Movement past `CLICK_THRESHOLD = 4 px` flips `moved` to true and schedules a `requestAnimationFrame`.
-5. The **frame callback** does one of two things:
-   - **Reposition:** mutates `imgEl.style.transform` directly (no React). Native fit prepends `translate(-50%, -50%)` so offsets are measured from the cell centre.
-   - **Swap:** updates the `ghost` React state, runs `document.elementFromPoint` to find the cell under the cursor, and stores `overId`.
+5. The **frame callback** branches on `kind`:
+   - **reposition:** mutates `imgEl.style.transform` directly (no React). Native fit prepends `translate(-50%, -50%)` so offsets are measured from the cell centre.
+   - **swap:** updates the `ghost` React state, runs `document.elementFromPoint` to find the cell under the cursor, stores `overId` so the target highlights.
+   - **move:** same `elementFromPoint` lookup, plus a fallback through `pointToGridSlot` for whitespace drops. The resolved `(col, row)` is clamped into the existing grid and stored on `dragRef.current.dropCol / dropRow`. The frame callback also computes a design-space `dropRect` (via `computeCellRect` on a synthetic ghost cell at `(col, row)`) so the dashed preview renders inside `.board`.
 6. **Mouseup commits** via dispatch:
-   - If `!moved && drag.shift` → `SELECT_TOGGLE` (multi-select toggle).
-   - If `!moved && !shift && !wasPrimary` → `SELECT` (just focus the cell). **The file picker no longer opens on single click**, even on empty cells — that lets the user bounce focus around without accidentally summoning the OS dialog.
-   - If `!moved && wasPrimary` → no-op; the cell stays focused.
+   - If `!moved && drag.shift` → `SELECT_RANGE` (range from anchor → clicked).
+   - If `!moved && drag.meta` → `SELECT_TOGGLE` (multi-select toggle).
+   - If `!moved && plain && !wasPrimary` → `SELECT` (just focus the cell). The file picker still only opens on dbl-click.
    - If `moved && kind === 'reposition'` → `UPDATE_CELL { offsetX, offsetY }`.
-   - If `moved && kind === 'swap' && drag.overId` → `SWAP_CELLS` (images only). Wrapped in `document.startViewTransition` when supported. Drag-to-move-cell-position and drag-to-whitespace-snap were removed when shift was repurposed for image swap.
+   - If `moved && kind === 'swap' && drag.overId` → `SWAP_CELLS` (images only). Wrapped in `document.startViewTransition` when supported.
+   - If `moved && kind === 'move' && (dropCol, dropRow) ≠ original` → `MOVE_CELL_DROP { id, col, row }`. Cells already at the destination are pushed by `reflowAroundMover` (grid grows only when no slot exists). Wrapped in `document.startViewTransition` so the displaced cells animate.
 7. **Double-click** on a cell calls `uploadToCell(id)`. The handler is guarded by a `pickerOpenRef`: once a file picker opens, further calls are dropped until the picker resolves (via the `cancel` event on Chromium/Safari, or a 200 ms-delayed `window` focus fallback on Firefox). A rapid triple-click can therefore only ever produce a single OS dialog.
 8. **Wheel on a populated cell** zooms the image inside (`cell.scale *= e^(-deltaY * 0.0015)`, clamped to `[0.05, 5]`).
 
@@ -320,10 +330,13 @@ Right-clicking a cell that isn't already in the multi-selection replaces the sel
 | --- | --- | --- | --- |
 | Click cell | Any (empty or populated) | none | Focus the cell. **No file picker on single click.** |
 | Click cell | Already primary-selected | none | No-op (cell stays focused). |
-| Click cell | Any | Shift | Toggle this cell in the multi-selection. |
+| Click cell | Any | Shift | Range-select from primary anchor to this cell. |
+| Click cell | Any | ⌘ / Ctrl | Toggle this cell in the multi-selection. |
 | Double-click cell | Any | none | Open the file picker. Guarded — rapid extra clicks are dropped while the picker is open. |
-| Drag inside cell | Populated | none | Reposition image (offsetX/Y). |
-| Drag inside cell | Populated | Shift | Drop on another cell → `SWAP_CELLS` (images only). |
+| Drag cell | Populated | none | Reposition image inside cell (`offsetX/Y`). |
+| Drag cell | Empty | none | Move the cell to a new grid slot (no image to reposition). |
+| Drag cell | Any | Alt | Move the cell to a new grid slot; cells at the destination reflow out of the way. Drop preview rect renders in `.board`. |
+| Drag cell | Populated | Shift | Drop on another cell → `SWAP_CELLS` (images only). |
 | Drag E/W/N/S handle | Primary cell | none | Edge resize (cell pair). |
 | Drag corner handle | Primary cell | none | Track redistribute (entire band). |
 | Wheel over cell | Populated | none | Zoom image (`cell.scale`). |
@@ -393,21 +406,21 @@ The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The
 | Per-cell filter sliders (structured `cell.filters`) | `state/reducer.ts:filtersToCss` / `cssToFilters` + filter rows in `Inspector/CellTab.tsx` | reducer serialises back to the legacy CSS string consumed by `filters.py` |
 | Batch cell editing (multi-select) | `state/reducer.ts:UPDATE_CELLS` + `Inspector/CellTab.tsx` (hides Position / Split / image upload when multi) | n/a |
 | Copy / paste cell style | `state/styleClipboard.ts` + context-menu items in `StageCanvas.tsx:buildContextMenu` | n/a |
-| Cell selection (single + multi) | `state/reducer.ts:SELECT` / `SELECT_TOGGLE`, `StageCanvas.tsx:onCellMouseDown` (shift = toggle) | n/a |
+| Cell selection (single + range + toggle) | `state/reducer.ts:SELECT` / `SELECT_RANGE` / `SELECT_TOGGLE`, `StageCanvas.tsx:onCellMouseDown` (shift = range, ⌘/ctrl = toggle); same modifiers in `LeftPanel.tsx` layer rows | n/a |
 | Click outside → deselect | `StageCanvas.tsx:onStageMouseDown`, `Escape` keybind in `App.tsx` (text → watermark → cells) | n/a |
 | Click rule (single click only focuses; double-click opens picker, debounced) | `dragRef.{wasPrimary, shift}` checked in mouseup; `pickerOpenRef` guard in `uploadToCell` | n/a |
 | Right-click never opens picker | `onCellMouseDown` bails on `e.button !== 0` | n/a |
-| Cell drag (reposition / shift = image swap) | `StageCanvas.tsx:onCellMouseDown` + window listeners; `SWAP_CELLS` on drop | n/a |
+| Cell drag (plain = reposition image, alt = move cell, shift = swap images) | `StageCanvas.tsx:onCellMouseDown` + window listeners; `UPDATE_CELL` / `MOVE_CELL_DROP` / `SWAP_CELLS` dispatched on mouseup based on `dragRef.kind`. Drop preview rendered inside `.board` for `move` drags. | n/a |
 | Wheel zoom inside a cell | `CellView.onWheel` → `UPDATE_CELL { scale }` | scale baked in by `compose_cell` |
 | Edge resize (cell pair) | `StageCanvas.tsx:onHandleDown` edge branch + `EDGE_RESIZE` | `cell_box(...dx, dy, dw, dh)` |
 | Corner resize (track redistribute) | `StageCanvas.tsx:onHandleDown` corner branch + `RESIZE_TRACKS` | `grid_tracks(...col_sizes, row_sizes)` |
 | Edge resize into whitespace | `onHandleDown` no-immediates branch using `gapDistance` | same `cell_box` math |
 | Resize alignment guides | snapshot `alignXs`/`alignYs` in `onHandleDown`, dashed-line overlay rendered by `StageCanvas` | n/a |
-| Add Cell finds largest empty rect | `state/reducer.ts:findMaxEmptyRect` + `ADD_CELL` | n/a |
+| Add Cell / Duplicate Cell into largest empty rect (capped) | `state/reducer.ts:findMaxEmptyRect` + `capPlacementRect` + `ADD_CELL` / `DUPLICATE_CELL`; right-click "Duplicate cell" wires through `StageCanvas:buildContextMenu` | n/a |
 | Remove Cell auto-absorbs whitespace | `state/reducer.ts:compactAfterRemoval` (3 strategies) | n/a |
 | Merge selected cells | `state/reducer.ts:MERGE_CELLS`, button in `Inspector/CellTab` when 2+ selected, `⌘M` | n/a |
 | Sync shape across selection | `state/reducer.ts:SYNC_CELLS_SHAPE`, multi-select context menu | n/a |
-| Split cell into N rows / cols | `state/reducer.ts:SPLIT_CELL`, `Inspector/CellTab:SplitControls`, single-cell context menu | n/a |
+| Split cell into N rows / cols (equal halves; target rect preserved; no overlap) | `state/reducer.ts:SPLIT_CELL` replaces the band's S tracks with N equal-weight tracks (each = bandTotal/N); sub-cells span exactly one new track each; cells crossing the band have endpoints snapped to the nearest new track boundary by cumulative-weight proportion. `Inspector/CellTab:SplitControls`, single-cell context menu. | n/a |
 | Random layout generator | `state/reducer.ts:generateRandomLayout` + `MOODS` table; `LeftPanel` "Random" section with cell-count input + "Squares only" toggle | n/a |
 | Right-click context menu | `components/ContextMenu.tsx` (portalled, viewport-aware); `StageCanvas:onStageContextMenu` + `buildContextMenu` decides items | n/a |
 | Cell border render | dedicated overlay div in `StageCanvas:CellView` (`borderOverlayStyle`) so the inset stroke paints above the image | inset stroke band in `renderer/shapes.py:stroke_cell` |
@@ -423,7 +436,8 @@ The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The
 | Heart silhouette parity | `state/shapes.ts` SVG path | `renderer/shapes.py` samples the same four cubic beziers at 64 steps each |
 | Output filename + format (PNG / JPG / WebP / SVG) | `Inspector/OutputTab` File section; default name auto-generated by `state/reducer.ts:generateFilename` → `PG_YYYYMMDD_HHMMSS`, regenerated on `RESET` / `REPLACE` / `APPLY_PRESET` | response `Content-Disposition` is ignored; frontend owns the name. SVG path is a base64-PNG `<image>` wrapper (`pillow_renderer.py:_encode`) |
 | Save folder + filename dedup | `api/folder.ts` (FSA + IndexedDB); `writeBlobToFolder` walks `_1`, `_2`, … and returns the actual saved name | n/a |
-| Disable Upload / Export while busy | `App.tsx:uploading` + `exporting` flags → `TopBar` `busy` prop | n/a |
+| Disable Upload / Export while busy | `App.tsx:uploading` + `exporting` flags → `TopBar` `busy` prop. The `uploading` flag is also threaded into `StageCanvas`, `LeftPanel`, and `Inspector` (CellTab + ContainerTab) so per-cell, bg, and watermark file pickers are gated, and `StageCanvas` paints a blocking spinner overlay while uploads are in flight. | n/a |
+| Image fit (export EXIF orientation) | n/a | `api/images.py:upload` and `renderer/pillow_renderer.py:_open_source` / bg image / `renderer/overlays.py:composite_watermark` all run `ImageOps.exif_transpose` so the orientation of cover/contain/fill matches the browser's `createImageBitmap` preview. |
 | Templates | `state/templates.ts` (localStorage) + `LeftPanel` (delete confirmation via `<Modal>`, `<TemplateRow>` with double-click rename → `Templates.rename`) | rehydrates cell + bg-image + watermark-image previews via `GET /api/images/{hash}` |
 | Shuffle defaults to live cell count | `LeftPanel.tsx` useEffect syncs `randRaw` to `state.cells.length` on every change | n/a |
 | Undo / redo | `state/history.ts` + ⌘Z keybinds in `App.tsx` | n/a |
