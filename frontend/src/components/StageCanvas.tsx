@@ -1404,7 +1404,10 @@ export function StageCanvas({ state, dispatch, uploading, setUploading }: Props)
           {grid.cols} × {grid.rows} grid
         </span>
         <span className="ml-auto" />
-        <span style={{ color: 'var(--text-4)' }}>
+        <span
+          className="stage-foot-help truncate"
+          style={{ color: 'var(--text-4)', maxWidth: '50%' }}
+        >
           Drag to position image · Alt-drag to move cell · Shift-drag to swap · Shift-click range · ⌘-click toggle
         </span>
       </div>

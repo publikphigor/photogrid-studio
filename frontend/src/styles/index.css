@@ -136,6 +136,10 @@
     color: var(--text);
     background: var(--hover);
   }
+  .btn.ghost[aria-pressed='true'] {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
   .btn .kbd {
     font-family: var(--mono);
     font-size: 10.5px;
@@ -489,6 +493,14 @@
     border-radius: 999px;
     border: 1px solid var(--line);
     color: var(--text-2);
+  }
+  /* Hide the verbose drag-hint line at tablet widths — there's no room for it
+   * once the canvas is the only thing in the row, and it overflows visually
+   * onto the drawer/inspector. */
+  @media (max-width: 1023px) {
+    .stage-foot-help {
+      display: none;
+    }
   }
 
   .board-wrap {

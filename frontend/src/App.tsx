@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Github, MonitorSmartphone, X } from 'lucide-react';
 import type { CellImageRef } from '@/types';
 import { defaultState, reducer } from '@/state/reducer';
 import { useHistoryReducer } from '@/state/history';
@@ -12,12 +13,38 @@ import { ensureWritable, getStoredFolder, writeBlobToFolder } from '@/api/folder
 import { formatBytes } from '@/state/presets';
 
 type Theme = 'dark' | 'light';
+type Viewport = 'mobile' | 'tablet' | 'desktop';
+
+/** Editor is desktop-first by necessity (modifier-key drags, edge-resize, wheel
+ *  zoom). Below 768px we gate to a "use a desktop" screen; 768–1023px floats
+ *  the two side panels over the canvas as drawers; ≥1024px is the original
+ *  three-column layout. */
+function measureViewport(): Viewport {
+  if (typeof window === 'undefined') return 'desktop';
+  const w = window.innerWidth;
+  if (w < 768) return 'mobile';
+  if (w < 1024) return 'tablet';
+  return 'desktop';
+}
+
+function useViewport(): Viewport {
+  const [v, setV] = useState(measureViewport);
+  useEffect(() => {
+    const onResize = () => setV(measureViewport());
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return v;
+}
 
 export function App() {
+  const viewport = useViewport();
   const [state, dispatch, history] = useHistoryReducer(reducer, defaultState());
   const [toast, setToast] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [leftOpen, setLeftOpen] = useState(false);
+  const [rightOpen, setRightOpen] = useState(false);
   const [exportInfo, setExportInfo] = useState<{
     lastSize?: number;
     rendererName?: string;
@@ -32,13 +59,19 @@ export function App() {
     localStorage.setItem('pg_theme', theme);
   }, [theme]);
 
+  // Closing a drawer when switching back to desktop avoids surprise state when
+  // the user resizes the window with one open.
+  useEffect(() => {
+    if (viewport === 'desktop') {
+      setLeftOpen(false);
+      setRightOpen(false);
+    }
+  }, [viewport]);
+
   const handleExport = useCallback(async () => {
     setExporting(true);
     try {
       const res = await exportImage(state, async (missing) => {
-        // Re-upload originals when the backend tells us its cache is missing them.
-        // We need the underlying File objects, but the cell only stores hashes.
-        // Trigger a file picker for each missing hash with the cell's name as a hint.
         const stillMissing: string[] = [];
         for (const hash of missing) {
           const cell = state.cells.find((c) => c.image?.hash === hash);
@@ -120,9 +153,6 @@ export function App() {
           dispatch({ type: 'REMOVE_TEXT_LAYER', id: state.selectedTextLayerId });
         } else if (state.selectedCellIds.length) {
           e.preventDefault();
-          // Remove every selected cell. Iterate in reverse so removals don't
-          // change the indexes of pending ids (REMOVE_CELL works by id, not
-          // index, but successive dispatches are independent reductions).
           for (const id of state.selectedCellIds) {
             dispatch({ type: 'REMOVE_CELL', id });
           }
@@ -134,7 +164,11 @@ export function App() {
         e.preventDefault();
         void handleExport();
       } else if (e.key === 'Escape') {
-        if (state.selectedTextLayerId) {
+        if (leftOpen || rightOpen) {
+          e.preventDefault();
+          setLeftOpen(false);
+          setRightOpen(false);
+        } else if (state.selectedTextLayerId) {
           e.preventDefault();
           dispatch({ type: 'SELECT_TEXT_LAYER', id: null });
         } else if (state.selectedWatermark) {
@@ -154,7 +188,15 @@ export function App() {
     state.selectedWatermark,
     handleExport,
     dispatch,
+    leftOpen,
+    rightOpen,
   ]);
+
+  if (viewport === 'mobile') {
+    return <DesktopOnlyGate />;
+  }
+
+  const compact = viewport === 'tablet';
 
   return (
     <div className="grid h-full" style={{ gridTemplateRows: '48px 1fr' }}>
@@ -168,27 +210,160 @@ export function App() {
         onExport={handleExport}
         exporting={exporting}
         uploading={uploading}
+        compact={compact}
+        leftOpen={leftOpen}
+        rightOpen={rightOpen}
+        onToggleLeft={() => {
+          setLeftOpen((o) => !o);
+          setRightOpen(false);
+        }}
+        onToggleRight={() => {
+          setRightOpen((o) => !o);
+          setLeftOpen(false);
+        }}
       />
-      <div
-        className="grid h-[calc(100vh-48px)] min-h-0"
-        style={{ gridTemplateColumns: '248px 1fr 320px' }}
-      >
-        <LeftPanel state={state} dispatch={dispatch} uploading={uploading} />
-        <StageCanvas
-          state={state}
-          dispatch={dispatch}
-          uploading={uploading}
-          setUploading={setUploading}
-        />
-        <Inspector
-          state={state}
-          dispatch={dispatch}
-          exportInfo={exportInfo}
-          uploading={uploading}
-          setUploading={setUploading}
-        />
-      </div>
+      {compact ? (
+        <div className="relative flex h-[calc(100vh-48px)] min-h-0 overflow-hidden">
+          <StageCanvas
+            state={state}
+            dispatch={dispatch}
+            uploading={uploading}
+            setUploading={setUploading}
+          />
+          <Drawer side="left" open={leftOpen} onClose={() => setLeftOpen(false)} width={260}>
+            <LeftPanel state={state} dispatch={dispatch} uploading={uploading} />
+          </Drawer>
+          <Drawer side="right" open={rightOpen} onClose={() => setRightOpen(false)} width={320}>
+            <Inspector
+              state={state}
+              dispatch={dispatch}
+              exportInfo={exportInfo}
+              uploading={uploading}
+              setUploading={setUploading}
+            />
+          </Drawer>
+          {(leftOpen || rightOpen) && (
+            <button
+              aria-label="Close panel"
+              className="absolute inset-0 z-20 bg-black/40"
+              onClick={() => {
+                setLeftOpen(false);
+                setRightOpen(false);
+              }}
+            />
+          )}
+        </div>
+      ) : (
+        <div
+          className="grid h-[calc(100vh-48px)] min-h-0"
+          style={{ gridTemplateColumns: '248px 1fr 320px' }}
+        >
+          <LeftPanel state={state} dispatch={dispatch} uploading={uploading} />
+          <StageCanvas
+            state={state}
+            dispatch={dispatch}
+            uploading={uploading}
+            setUploading={setUploading}
+          />
+          <Inspector
+            state={state}
+            dispatch={dispatch}
+            exportInfo={exportInfo}
+            uploading={uploading}
+            setUploading={setUploading}
+          />
+        </div>
+      )}
       {toast && <Toast message={toast} />}
+    </div>
+  );
+}
+
+function Drawer({
+  side,
+  open,
+  onClose,
+  width,
+  children,
+}: {
+  side: 'left' | 'right';
+  open: boolean;
+  onClose: () => void;
+  width: number;
+  children: React.ReactNode;
+}) {
+  const closedTranslate = side === 'left' ? `-${width}px` : `${width}px`;
+  return (
+    <div
+      role="dialog"
+      aria-hidden={!open}
+      className="absolute inset-y-0 z-30 flex flex-col"
+      style={{
+        [side]: 0,
+        width,
+        background: 'var(--panel)',
+        borderLeft: side === 'right' ? '1px solid var(--line)' : undefined,
+        borderRight: side === 'left' ? '1px solid var(--line)' : undefined,
+        transform: open ? 'translateX(0)' : `translateX(${closedTranslate})`,
+        transition: 'transform 220ms ease',
+        boxShadow: open
+          ? side === 'left'
+            ? '8px 0 24px rgba(0,0,0,0.45)'
+            : '-8px 0 24px rgba(0,0,0,0.45)'
+          : 'none',
+      }}
+    >
+      <div className="flex items-center justify-between h-9 px-3 border-b border-line">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-text-3">
+          {side === 'left' ? 'Layouts & layers' : 'Inspector'}
+        </span>
+        <button
+          className="icon-btn"
+          style={{ width: 24, height: 24 }}
+          onClick={onClose}
+          title="Close"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+function DesktopOnlyGate() {
+  return (
+    <div className="flex h-full items-center justify-center bg-bg text-text px-6">
+      <div className="max-w-sm text-center">
+        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-accent text-[color:var(--primary-fg)]">
+          <MonitorSmartphone size={22} />
+        </div>
+        <h1 className="text-[20px] font-semibold tracking-tight text-text">
+          Open this on a bigger screen
+        </h1>
+        <p className="mt-3 text-[14px] leading-relaxed text-text-2">
+          The editor needs a bit of room — modifier-key drags, edge resizing,
+          and the inspector don't fit comfortably on a phone. Come back on a
+          laptop or tablet and you'll find everything where you left it.
+        </p>
+        <div className="mt-7 flex flex-col gap-2.5">
+          <a
+            href="/"
+            className="inline-flex h-10 items-center justify-center rounded-md border border-line bg-panel text-[13.5px] text-text transition hover:border-line-strong"
+          >
+            Back to the landing page
+          </a>
+          <a
+            href="https://github.com/publikphigor/photogrid-studio"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md text-[13px] text-text-3 transition hover:text-text"
+          >
+            <Github size={14} />
+            View source on GitHub
+          </a>
+        </div>
+      </div>
     </div>
   );
 }
@@ -200,16 +375,12 @@ const FORMAT_MIMES: Record<string, string> = {
   svg: 'image/svg+xml',
 };
 
-/** Save a blob, preferring the user's persisted export folder, then OS save dialog,
- *  then a plain anchor-download fallback. `notify` shows transient hints (e.g. when
- *  folder permission is needed). */
 async function saveBlob(
   blob: Blob,
   filename: string,
   format: string,
   notify: (msg: string) => void,
 ): Promise<string | undefined> {
-  // 1. Persisted folder (FSA Directory)
   const folder = await getStoredFolder();
   if (folder) {
     const granted = await ensureWritable(folder);
@@ -219,7 +390,6 @@ async function saveBlob(
     notify('Folder permission denied; falling back to save dialog');
   }
 
-  // 2. Save dialog
   const fsa = (window as unknown as {
     showSaveFilePicker?: (options: {
       suggestedName: string;
@@ -246,7 +416,6 @@ async function saveBlob(
     }
   }
 
-  // 3. Anchor download
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -259,7 +428,6 @@ async function saveBlob(
   }, 200);
 }
 
-/** File picker that resolves with the chosen File or null. */
 function pickFileMatching(_hint: string): Promise<File | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
