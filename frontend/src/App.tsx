@@ -16,14 +16,16 @@ type Theme = 'dark' | 'light';
 type Viewport = 'mobile' | 'tablet' | 'desktop';
 
 /** Editor is desktop-first by necessity (modifier-key drags, edge-resize, wheel
- *  zoom). Below 768px we gate to a "use a desktop" screen; 768–1023px floats
- *  the two side panels over the canvas as drawers; ≥1024px is the original
- *  three-column layout. */
+ *  zoom). Below 768px we gate to a "use a desktop" screen; 768–1599px floats
+ *  the two side panels over the canvas as drawers; ≥1600px is the original
+ *  three-column layout. The drawer range is wide because the three columns
+ *  (248 + canvas + 320) need real room before the canvas itself becomes
+ *  large enough to work in — under ~1600px the canvas is the bottleneck. */
 function measureViewport(): Viewport {
   if (typeof window === 'undefined') return 'desktop';
   const w = window.innerWidth;
   if (w < 768) return 'mobile';
-  if (w < 1024) return 'tablet';
+  if (w < 1600) return 'tablet';
   return 'desktop';
 }
 
@@ -332,9 +334,19 @@ function Drawer({
 }
 
 function DesktopOnlyGate() {
+  // Two-level layout — outer is the viewport box, inner is the centered card.
+  // min-w-0 on the inner flex item defeats the default `min-width: auto`
+  // behaviour that lets an unbreakable word push a flex item past its
+  // max-width cap. word-break: break-word is a defensive belt-and-braces.
   return (
-    <div className="grid h-full w-full place-items-center overflow-hidden bg-bg text-text px-6">
-      <div className="w-full max-w-sm text-center break-words">
+    <div
+      className="flex items-center justify-center overflow-hidden bg-bg text-text"
+      style={{ position: 'fixed', inset: 0, padding: '24px 20px' }}
+    >
+      <div
+        className="text-center"
+        style={{ width: '100%', maxWidth: 380, minWidth: 0, wordBreak: 'break-word' }}
+      >
         <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-accent text-[color:var(--primary-fg)]">
           <MonitorSmartphone size={22} />
         </div>
@@ -342,9 +354,8 @@ function DesktopOnlyGate() {
           Open this on a bigger screen
         </h1>
         <p className="mt-3 text-[14px] leading-relaxed text-text-2">
-          The editor needs a bit of room — modifier-key drags, edge resizing,
-          and the inspector don't fit comfortably on a phone. Come back on a
-          laptop or tablet and you'll find everything where you left it.
+          The editor needs more room than a phone gives. Come back on a laptop
+          or tablet and you'll find everything where you left it.
         </p>
         <div className="mt-7 flex flex-col gap-2.5">
           <a
