@@ -1,12 +1,13 @@
 import type { AspectRatio, LayoutPreset } from '@/types';
 
 export const ASPECT_RATIOS: AspectRatio[] = [
+  { id: '4:5', label: 'Instagram Post', w: 4, h: 5 },
+  { id: '9:16', label: 'Instagram Story', w: 9, h: 16 },
+  { id: '2:3', label: 'Pinterest', w: 2, h: 3 },
+  { id: '16:9', label: 'YouTube Banner', w: 16, h: 9 },
   { id: '1:1', label: 'Square', w: 1, h: 1 },
-  { id: '4:5', label: 'Portrait', w: 4, h: 5 },
-  { id: '3:4', label: '3:4', w: 3, h: 4 },
-  { id: '9:16', label: 'Story', w: 9, h: 16 },
+  { id: '3:4', label: 'Portrait', w: 3, h: 4 },
   { id: '4:3', label: 'Landscape', w: 4, h: 3 },
-  { id: '16:9', label: 'Widescreen', w: 16, h: 9 },
   { id: '2:1', label: 'Banner', w: 2, h: 1 },
 ];
 

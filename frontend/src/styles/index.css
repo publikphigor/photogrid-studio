@@ -730,6 +730,11 @@
   to { opacity: 1; transform: scale(1); }
 }
 
+@keyframes pg-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;

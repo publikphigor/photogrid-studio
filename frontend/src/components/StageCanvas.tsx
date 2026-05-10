@@ -12,6 +12,7 @@ import {
   ClipboardCopy,
   ClipboardPaste,
   Columns,
+  Copy,
   Image as ImageIcon,
   Layers,
   Replace,
@@ -40,6 +41,7 @@ import {
   cellPixelSize,
   computeCellRect,
   coverFitScale,
+  pointToGridSlot,
   trackSizes,
 } from '@/state/reducer';
 import { StyleClipboard, type CellStyle } from '@/state/styleClipboard';
@@ -48,6 +50,13 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
+  /** True while one or more uploads are in flight anywhere in the app.
+   *  Disables the per-cell file picker and shows a loading overlay so users
+   *  don't accidentally queue a second upload mid-flight. */
+  uploading: boolean;
+  /** Lets the canvas mark uploads as in-flight while a multi-file picker
+   *  resolves, sharing the gate with TopBar.Upload / Inspector pickers. */
+  setUploading: (v: boolean) => void;
 }
 
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
@@ -107,11 +116,15 @@ interface ResizeState {
 }
 
 /** What a mouse drag inside a cell means.
- *  - `reposition`: drag the IMAGE inside the cell (no shift, populated cell).
+ *  - `reposition`: plain drag inside a populated cell — drag the IMAGE
+ *    (offsetX/Y) within the cell.
+ *  - `move`: alt-drag — relocate the cell's grid position (other cells
+ *    reflow out of the way). Also the default for empty cells (no image
+ *    to reposition).
  *  - `swap`: shift+drag a populated cell — drop on another cell to swap their
  *    IMAGES (positions/spans stay put).
  */
-type DragKind = 'reposition' | 'swap';
+type DragKind = 'move' | 'reposition' | 'swap';
 
 interface ActiveDrag {
   kind: DragKind;
@@ -140,22 +153,33 @@ interface ActiveDrag {
   /** Was this cell the PRIMARY selection at mousedown? Plain click on a
    *  primary-selected populated cell triggers the file picker on mouseup. */
   wasPrimary: boolean;
-  /** Was shift held at mousedown? On click → toggle multi-selection; on
-   *  drag → swap images. */
+  /** Was this cell already selected at mousedown? Used to defer plain-click
+   *  selection collapse to mouseup so click-then-drag works as expected. */
+  wasSelected: boolean;
+  /** Was shift held at mousedown? Click → range select; drag → swap images. */
   shift: boolean;
+  /** Was meta/ctrl held at mousedown? Click → toggle multi-selection. */
+  meta: boolean;
+  /** Was alt held at mousedown? Drag → reposition image inside cell. */
+  alt: boolean;
+  /** Last computed drop slot for a 'move' drag (committed on mouseup). */
+  dropCol?: number;
+  dropRow?: number;
 }
 
 interface GhostState {
   x: number;
   y: number;
   src: string;
-  mode: 'image' | 'cell';
+  mode: 'image' | 'cell' | 'move';
   overId: string | null;
+  /** Drop-target rect in design pixels (only set during 'move' drags). */
+  dropRect?: { x: number; y: number; w: number; h: number } | null;
 }
 
 const CLICK_THRESHOLD = 4; // px before a mousedown becomes a drag
 
-export function StageCanvas({ state, dispatch }: Props) {
+export function StageCanvas({ state, dispatch, uploading, setUploading }: Props) {
   const { container, grid, cells, selectedCellIds, canvas: canvasState } = state;
   const primarySelectedId = selectedCellIds[0] ?? null;
   const dims = dimensionsFor(container.aspect, state.output.baseSize);
@@ -196,6 +220,11 @@ export function StageCanvas({ state, dispatch }: Props) {
   cellsRef.current = cells;
   const selectedRef = useRef(selectedCellIds);
   selectedRef.current = selectedCellIds;
+  // Latest snapshot of grid + container + dims, read inside the global
+  // mousemove/mouseup listeners (which only mount once per dispatch
+  // identity) so the drop-target math stays in sync across renders.
+  const gridRef = useRef({ grid, container, dims });
+  gridRef.current = { grid, container, dims };
 
   useEffect(() => {
     const el = stageRef.current;
@@ -216,7 +245,7 @@ export function StageCanvas({ state, dispatch }: Props) {
     (stageBox.h - PADDING) / dims.h,
     1,
   );
-  const zoom = Math.max(0.05, fitScale * canvasState.zoom);
+  const zoom = Math.max(0.02, fitScale * canvasState.zoom);
   const dispW = dims.w * zoom;
   const dispH = dims.h * zoom;
 
@@ -227,17 +256,22 @@ export function StageCanvas({ state, dispatch }: Props) {
     async (files: FileList | File[]) => {
       const valid = [...files].filter((f) => f.type.startsWith('image/'));
       if (!valid.length) return;
-      const imgs: CellImageRef[] = [];
-      for (const f of valid) {
-        try {
-          imgs.push(await ingestFile(f));
-        } catch (e) {
-          console.error('upload failed', f.name, e);
+      setUploading(true);
+      try {
+        const imgs: CellImageRef[] = [];
+        for (const f of valid) {
+          try {
+            imgs.push(await ingestFile(f));
+          } catch (e) {
+            console.error('upload failed', f.name, e);
+          }
         }
+        if (imgs.length) dispatch({ type: 'FILL_FROM_FILES', images: imgs });
+      } finally {
+        setUploading(false);
       }
-      if (imgs.length) dispatch({ type: 'FILL_FROM_FILES', images: imgs });
     },
-    [dispatch],
+    [dispatch, setUploading],
   );
 
   const isFileDrag = (e: DragEvent) => {
@@ -275,7 +309,7 @@ export function StageCanvas({ state, dispatch }: Props) {
   // otherwise the focus/blur fallback releases the lock.
   const pickerOpenRef = useRef(false);
   const uploadToCell = (id: string) => {
-    if (pickerOpenRef.current) return;
+    if (pickerOpenRef.current || uploading) return;
     pickerOpenRef.current = true;
     const release = () => {
       pickerOpenRef.current = false;
@@ -288,6 +322,7 @@ export function StageCanvas({ state, dispatch }: Props) {
       try {
         const files = [...(input.files ?? [])];
         if (!files.length) return;
+        setUploading(true);
         const imgs: CellImageRef[] = [];
         for (const f of files) {
           try {
@@ -316,6 +351,7 @@ export function StageCanvas({ state, dispatch }: Props) {
           dispatch({ type: 'FILL_EMPTY_NO_GROW', images: imgs.slice(1) });
         }
       } finally {
+        setUploading(false);
         release();
       }
     };
@@ -719,18 +755,17 @@ export function StageCanvas({ state, dispatch }: Props) {
       const tgt = e.target as HTMLElement;
       if (tgt.closest('.cell-handle') || tgt.closest('.cell-controls button')) return;
 
-      // Selection rules:
-      //  - shift+click toggles this cell into the multi-selection (resolved
-      //    on mouseup so shift+drag can repurpose the gesture for image swap
-      //    without leaving a dangling selection toggle behind).
-      //  - plain click on a cell that isn't selected makes it the sole
-      //    selection (no picker yet).
-      //  - plain click on an already-primary-selected populated cell is a
-      //    "reopen" intent → opens the file picker on mouseup.
+      // Selection is resolved on mouseup if the gesture is a click (no drag).
+      // We only ensure the cell is the active source-of-truth for its drag
+      // (so the resize handles and inspector point at it). For shift/meta we
+      // defer — the resolved selection depends on whether the user actually
+      // clicked or dragged.
       const wasSelected = selectedRef.current.includes(cell.id);
       const wasPrimary = selectedRef.current[0] === cell.id;
       const shift = e.shiftKey;
-      if (!shift && !wasSelected) {
+      const meta = e.metaKey || e.ctrlKey;
+      const alt = e.altKey;
+      if (!shift && !meta && !wasSelected) {
         dispatch({ type: 'SELECT', id: cell.id });
       }
 
@@ -738,12 +773,19 @@ export function StageCanvas({ state, dispatch }: Props) {
       const boardRect = board?.getBoundingClientRect();
       const invZoom = boardRect && boardRect.width > 0 ? dims.w / boardRect.width : 1;
 
-      // Drag rules:
+      // Drag rules (decided up-front so the gesture can't change kind mid-drag):
       //  - shift+drag from a populated cell → swap IMAGES with the drop
       //    target (positions/spans untouched).
-      //  - drag inside a populated cell → reposition image.
-      //  - drag inside an empty cell → no-op (click path runs on mouseup).
-      const kind: DragKind = cell.image && shift ? 'swap' : 'reposition';
+      //  - alt+drag → MOVE the cell to a new grid slot; cells at the
+      //    destination reflow out of the way.
+      //  - plain drag inside a populated cell → reposition the image
+      //    (offsetX/Y) within the cell.
+      //  - plain drag inside an empty cell → MOVE (no image to reposition).
+      let kind: DragKind;
+      if (cell.image && shift) kind = 'swap';
+      else if (alt) kind = 'move';
+      else if (cell.image) kind = 'reposition';
+      else kind = 'move';
 
       dragRef.current = {
         kind,
@@ -765,7 +807,10 @@ export function StageCanvas({ state, dispatch }: Props) {
         lastOffsetY: cell.offsetY,
         overId: null,
         wasPrimary,
+        wasSelected,
         shift,
+        meta,
+        alt,
       };
     },
     [dispatch, dims.w],
@@ -788,17 +833,76 @@ export function StageCanvas({ state, dispatch }: Props) {
         drag.imgEl.style.transform = `${center}translate(${nx}px, ${ny}px) scale(${drag.scale}) rotate(${drag.rotation}deg)`;
         return;
       }
-      // swap / move: track ghost + target cell
+      // swap / move: track ghost + target cell + drop preview
       const el = document.elementFromPoint(drag.curX, drag.curY);
       const target = el?.closest('[data-cell-id]') as HTMLElement | null;
       const overId = target?.getAttribute('data-cell-id') ?? null;
       drag.overId = overId && overId !== drag.cellId ? overId : null;
+
+      // For 'move' drags, compute a design-space drop rect so the user sees
+      // exactly where the cell will land. We reuse the over cell's grid coords
+      // when the cursor is over an existing cell (the nearest grid anchor),
+      // and fall back to whitespace mapping otherwise.
+      let dropRect: { x: number; y: number; w: number; h: number } | null = null;
+      if (drag.kind === 'move') {
+        const { grid: g, container: c, dims: d } = gridRef.current;
+        const innerW = d.w - c.padding * 2 - c.gap * (g.cols - 1);
+        const innerH = d.h - c.padding * 2 - c.gap * (g.rows - 1);
+        const moverCell = cellsRef.current.find((cc) => cc.id === drag.cellId);
+        if (moverCell) {
+          let col = moverCell.colStart;
+          let row = moverCell.rowStart;
+          let resolved = false;
+          if (drag.overId) {
+            const overCell = cellsRef.current.find((cc) => cc.id === drag.overId);
+            if (overCell) {
+              col = overCell.colStart;
+              row = overCell.rowStart;
+              resolved = true;
+            }
+          }
+          if (!resolved) {
+            // Cursor in design space. The board's bounding box was captured
+            // when the drag started; use it to project the cursor.
+            const boardEl = wrapRef.current;
+            if (boardEl) {
+              const br = boardEl.getBoundingClientRect();
+              if (br.width > 0 && br.height > 0) {
+                const px = ((drag.curX - br.left) * d.w) / br.width;
+                const py = ((drag.curY - br.top) * d.h) / br.height;
+                const slot = pointToGridSlot(
+                  px, py, c.padding, c.gap, d.w, d.h, g, cellsRef.current,
+                );
+                if (slot) {
+                  col = slot.c;
+                  row = slot.r;
+                }
+              }
+            }
+          }
+          col = Math.max(1, Math.min(col, g.cols - moverCell.colSpan + 1));
+          row = Math.max(1, Math.min(row, g.rows - moverCell.rowSpan + 1));
+          drag.dropCol = col;
+          drag.dropRow = row;
+          const ghostCell: Cell = {
+            ...moverCell,
+            colStart: col,
+            rowStart: row,
+            dx: 0, dy: 0, dw: 0, dh: 0,
+          };
+          dropRect = computeCellRect(
+            ghostCell, g, innerW, innerH, c.padding, c.gap,
+          );
+        }
+      }
+
       setGhost({
         x: drag.curX,
         y: drag.curY,
         src: drag.ghostSrc,
-        mode: drag.kind === 'swap' ? 'cell' : 'image',
+        mode: drag.kind === 'swap' ? 'cell' : drag.kind === 'move' ? 'move' : 'image',
         overId: drag.overId,
+        dropRect,
       });
     };
 
@@ -830,13 +934,14 @@ export function StageCanvas({ state, dispatch }: Props) {
       }
       const cell = cellsRef.current.find((c) => c.id === drag.cellId);
       if (!drag.moved) {
-        // Pure click. Shift resolves to a multi-selection toggle (deferred
-        // from mousedown so a shift+drag never leaves a dangling toggle).
-        // Plain clicks just focus the cell — the file picker now opens via
-        // double-click only. This means clicking around to bounce focus
-        // between cells (empty or populated) never accidentally pops the OS
-        // picker, and accidental rapid clicks can't queue up multiple.
+        // Pure click. Selection rules (deferred to mouseup so that drag
+        // gestures don't leave dangling toggles):
+        //   shift+click   → range select from primary anchor to this cell
+        //   meta/ctrl+click → toggle this cell into the multi-selection
+        //   plain click   → focus this cell (file picker opens on dbl-click)
         if (drag.shift) {
+          dispatch({ type: 'SELECT_RANGE', id: drag.cellId });
+        } else if (drag.meta) {
           dispatch({ type: 'SELECT_TOGGLE', id: drag.cellId });
         } else if (cell && !drag.wasPrimary) {
           dispatch({ type: 'SELECT', id: cell.id });
@@ -865,6 +970,31 @@ export function StageCanvas({ state, dispatch }: Props) {
         ).startViewTransition;
         if (typeof startVT === 'function') startVT.call(document, () => dispatch(action));
         else dispatch(action);
+      } else if (drag.kind === 'move') {
+        // Plain drag → relocate the cell to the resolved drop slot. Cells at
+        // the destination reflow out of the way (reflowAroundMover).
+        const targetCol = drag.dropCol;
+        const targetRow = drag.dropRow;
+        if (
+          cell &&
+          targetCol != null &&
+          targetRow != null &&
+          (targetCol !== cell.colStart || targetRow !== cell.rowStart)
+        ) {
+          const action: Action = {
+            type: 'MOVE_CELL_DROP',
+            id: drag.cellId,
+            col: targetCol,
+            row: targetRow,
+          };
+          const startVT = (
+            document as unknown as {
+              startViewTransition?: (cb: () => void) => unknown;
+            }
+          ).startViewTransition;
+          if (typeof startVT === 'function') startVT.call(document, () => dispatch(action));
+          else dispatch(action);
+        }
       }
       dragRef.current = null;
       setGhost(null);
@@ -1020,6 +1150,7 @@ export function StageCanvas({ state, dispatch }: Props) {
                         primary={primarySelectedId === cell.id}
                         multi={selectedCellIds.length >= 2}
                         swapOver={ghost?.overId === cell.id}
+                        uploading={uploading}
                         onMouseDown={onCellMouseDown}
                         onUpload={() => uploadToCell(cell.id)}
                         onRemove={() => dispatch({ type: 'REMOVE_CELL', id: cell.id })}
@@ -1074,6 +1205,26 @@ export function StageCanvas({ state, dispatch }: Props) {
                 zoom={zoom}
                 onHandleDown={onHandleDown}
               />
+              {/* Drop-target preview during a 'move' drag — outlines the
+                  grid slot the cell will land in. Lives inside .board so it
+                  scales with the design canvas. */}
+              {ghost?.dropRect && (
+                <div
+                  aria-hidden
+                  style={{
+                    position: 'absolute',
+                    left: ghost.dropRect.x,
+                    top: ghost.dropRect.y,
+                    width: ghost.dropRect.w,
+                    height: ghost.dropRect.h,
+                    border: `2px dashed var(--accent)`,
+                    background: 'rgba(64, 134, 244, 0.10)',
+                    pointerEvents: 'none',
+                    zIndex: 24,
+                    borderRadius: 6,
+                  }}
+                />
+              )}
               {/* Alignment guides during a resize drag — thin dashed lines
                   in design space; the parent .board scales them along with
                   the rest of the canvas. */}
@@ -1134,9 +1285,60 @@ export function StageCanvas({ state, dispatch }: Props) {
             left: ghost.x,
             top: ghost.y,
             backgroundImage: `url(${ghost.src})`,
-            outline: ghost.mode === 'cell' ? '2px dashed var(--accent)' : '2px solid var(--accent)',
+            outline:
+              ghost.mode === 'cell'
+                ? '2px dashed var(--accent)'
+                : ghost.mode === 'move'
+                  ? '2px solid var(--accent-2)'
+                  : '2px solid var(--accent)',
+            opacity: ghost.mode === 'move' ? 0.7 : 1,
           }}
         />
+      )}
+
+      {uploading && (
+        <div
+          aria-live="polite"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(0, 0, 0, 0.45)',
+            zIndex: 80,
+            pointerEvents: 'all',
+            backdropFilter: 'blur(2px)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '10px 16px',
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              borderRadius: 8,
+              fontSize: 12.5,
+              color: 'var(--text)',
+              boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 14,
+                height: 14,
+                borderRadius: '50%',
+                border: '2px solid var(--text-3)',
+                borderTopColor: 'var(--accent)',
+                animation: 'pg-spin 0.7s linear infinite',
+                display: 'inline-block',
+              }}
+            />
+            <span>Uploading images…</span>
+          </div>
+        </div>
       )}
 
       {ctxMenu && ctxMenu.cellId && (
@@ -1161,7 +1363,7 @@ export function StageCanvas({ state, dispatch }: Props) {
             className="icon-btn"
             style={{ width: 24, height: 22 }}
             onClick={() =>
-              dispatch({ type: 'SET_ZOOM', zoom: Math.max(0.25, +(canvasState.zoom - 0.1).toFixed(2)) })
+              dispatch({ type: 'SET_ZOOM', zoom: Math.max(0.05, +(canvasState.zoom - 0.1).toFixed(2)) })
             }
             title="Zoom out"
           >
@@ -1203,7 +1405,7 @@ export function StageCanvas({ state, dispatch }: Props) {
         </span>
         <span className="ml-auto" />
         <span style={{ color: 'var(--text-4)' }}>
-          Click empty · Drag to reposition · Shift-click to multi-select · Shift-drag to swap images
+          Drag to position image · Alt-drag to move cell · Shift-drag to swap · Shift-click range · ⌘-click toggle
         </span>
       </div>
     </div>
@@ -1314,6 +1516,7 @@ interface CellViewProps {
   primary: boolean;
   multi: boolean;
   swapOver: boolean;
+  uploading: boolean;
   onMouseDown: (e: MouseEvent, cell: Cell, imgEl: HTMLImageElement | null) => void;
   onUpload: () => void;
   onRemove: () => void;
@@ -1328,6 +1531,7 @@ const CellView = memo(function CellView({
   primary,
   multi,
   swapOver,
+  uploading,
   onMouseDown,
   onUpload,
   onRemove,
@@ -1395,7 +1599,7 @@ const CellView = memo(function CellView({
       className={`cell${selected ? ' selected' : ''}${primary ? ' primary' : ''}${multi ? ' multi-selected' : ''}${!cell.image ? ' empty' : ''}${swapOver ? ' drag-over' : ''}`}
       style={cellStyle}
       onMouseDown={(e) => onMouseDown(e, cell, imgRef.current)}
-      onDoubleClick={onUpload}
+      onDoubleClick={uploading ? undefined : onUpload}
       onWheel={(e) => {
         if (!cell.image) return;
         // Wheel zooms the image inside the cell. Multiplicative step keeps
@@ -1428,10 +1632,11 @@ const CellView = memo(function CellView({
       {borderOverlayStyle && <div style={borderOverlayStyle} aria-hidden />}
       <div className="cell-controls">
         <button
-          title={cell.image ? 'Replace' : 'Upload'}
+          title={uploading ? 'Uploading…' : cell.image ? 'Replace' : 'Upload'}
+          disabled={uploading}
           onClick={(e) => {
             e.stopPropagation();
-            onUpload();
+            if (!uploading) onUpload();
           }}
         >
           <Upload size={14} />
@@ -1564,6 +1769,12 @@ function buildContextMenu({
   }
   items.push(
     { id: 'div1', divider: true },
+    {
+      id: 'duplicate',
+      label: 'Duplicate cell',
+      icon: <Copy size={14} />,
+      onSelect: () => dispatch({ type: 'DUPLICATE_CELL', id: cellId }),
+    },
     {
       id: 'split-rows',
       label: 'Split into 2 rows',

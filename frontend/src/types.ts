@@ -221,6 +221,7 @@ export type Action =
   | { type: 'SET_GRID'; patch: Partial<GridConfig> }
   | { type: 'APPLY_PRESET'; preset: LayoutPreset }
   | { type: 'ADD_CELL' }
+  | { type: 'DUPLICATE_CELL'; id: string }
   | { type: 'REMOVE_CELL'; id: string }
   | { type: 'UPDATE_CELL'; id: string; patch: Partial<Cell> }
   | { type: 'UPDATE_CELLS'; ids: string[]; patch: Partial<Cell> }
@@ -243,6 +244,8 @@ export type Action =
   | { type: 'MOVE_CELL_TO_RECT'; id: string; colStart: number; rowStart: number; colSpan: number; rowSpan: number }
   | { type: 'SELECT'; id: string | null }
   | { type: 'SELECT_TOGGLE'; id: string }
+  | { type: 'SELECT_RANGE'; id: string }
+  | { type: 'MOVE_CELL_DROP'; id: string; col: number; row: number }
   | { type: 'MERGE_CELLS'; ids: string[] }
   | { type: 'SYNC_CELLS_SHAPE'; ids: string[] }
   | { type: 'SPLIT_CELL'; id: string; axis: 'row' | 'col'; count: number }

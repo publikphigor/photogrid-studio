@@ -640,6 +640,23 @@ export function pointToGridSlot(
   return { c: c1, r: r1, cs: c2 - c1 + 1, rs: r2 - r1 + 1 };
 }
 
+/** Caps a candidate placement rect at half the grid's dimensions (rounded up,
+ *  min 1) so a single new cell doesn't claim the entire empty half of a sparse
+ *  layout. Anchors the capped rect to the original top-left corner. */
+function capPlacementRect(
+  rect: { c: number; r: number; cs: number; rs: number },
+  grid: GridConfig,
+): { c: number; r: number; cs: number; rs: number } {
+  const maxCs = Math.max(1, Math.ceil(grid.cols / 2));
+  const maxRs = Math.max(1, Math.ceil(grid.rows / 2));
+  return {
+    c: rect.c,
+    r: rect.r,
+    cs: Math.min(rect.cs, maxCs),
+    rs: Math.min(rect.rs, maxRs),
+  };
+}
+
 /** Find the largest rectangular empty region in the current grid (in grid
  *  coords). Returns null when no empty slot exists. Used by ADD_CELL so a new
  *  cell automatically fills the biggest whitespace instead of dropping into
@@ -1152,11 +1169,17 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
     }
     case 'ADD_CELL': {
       // Find the LARGEST empty rectangle in the grid and place the new cell
-      // there at that size. If the grid is fully occupied, grow it by one
-      // track in the shorter axis (mirroring the previous fallback).
+      // there. Cap the placement so a giant empty half of a sparse grid
+      // doesn't spawn an outsized cell. If the grid is fully occupied, grow
+      // it by one track in the shorter axis (mirroring the previous fallback).
       const max = findMaxEmptyRect(state.cells, state.grid);
       if (max) {
-        const newCell = { ...blankCell(max.c, max.r), colSpan: max.cs, rowSpan: max.rs };
+        const placed = capPlacementRect(max, state.grid);
+        const newCell = {
+          ...blankCell(placed.c, placed.r),
+          colSpan: placed.cs,
+          rowSpan: placed.rs,
+        };
         return {
           ...state,
           cells: [...state.cells, newCell],
@@ -1184,6 +1207,73 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         grid,
         cells: [...state.cells, newCell],
         selectedCellIds: [newCell.id],
+      };
+    }
+    case 'DUPLICATE_CELL': {
+      // Clone a cell's image + style; place into the largest empty rectangle
+      // (capped to half the grid). Falls back to growing the grid only when
+      // the layout is fully occupied.
+      const src = state.cells.find((c) => c.id === action.id);
+      if (!src) return state;
+      const max = findMaxEmptyRect(state.cells, state.grid);
+      if (max) {
+        const placed = capPlacementRect(max, state.grid);
+        const dup: Cell = {
+          ...src,
+          id: uid(),
+          colStart: placed.c,
+          rowStart: placed.r,
+          colSpan: placed.cs,
+          rowSpan: placed.rs,
+          dx: 0,
+          dy: 0,
+          dw: 0,
+          dh: 0,
+          offsetX: 0,
+          offsetY: 0,
+        };
+        return {
+          ...state,
+          cells: [...state.cells, dup],
+          selectedCellIds: [dup.id],
+        };
+      }
+      // No whitespace anywhere — grow the grid by one track in the shorter
+      // axis and drop the duplicate at 1×1 there.
+      const grid: GridConfig = { ...state.grid };
+      let placedAt: { c: number; r: number };
+      if (grid.cols <= grid.rows) {
+        const cw = trackSizes(grid.colSizes, grid.cols);
+        const avg = cw.length ? cw.reduce((a, b) => a + b, 0) / cw.length : 1;
+        grid.cols += 1;
+        grid.colSizes = [...cw, avg];
+        placedAt = { c: grid.cols, r: 1 };
+      } else {
+        const rh = trackSizes(grid.rowSizes, grid.rows);
+        const avg = rh.length ? rh.reduce((a, b) => a + b, 0) / rh.length : 1;
+        grid.rows += 1;
+        grid.rowSizes = [...rh, avg];
+        placedAt = { c: 1, r: grid.rows };
+      }
+      const dup: Cell = {
+        ...src,
+        id: uid(),
+        colStart: placedAt.c,
+        rowStart: placedAt.r,
+        colSpan: 1,
+        rowSpan: 1,
+        dx: 0,
+        dy: 0,
+        dw: 0,
+        dh: 0,
+        offsetX: 0,
+        offsetY: 0,
+      };
+      return {
+        ...state,
+        grid,
+        cells: [...state.cells, dup],
+        selectedCellIds: [dup.id],
       };
     }
     case 'REMOVE_CELL': {
@@ -1294,6 +1384,56 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         : [...state.selectedCellIds, action.id];
       return { ...state, selectedCellIds: ids };
     }
+    case 'SELECT_RANGE': {
+      // Range select: anchor = current primary (first selected). Pick every
+      // cell whose row-major position lands between the anchor's and the
+      // clicked cell's, inclusive. Empty anchor → just select the clicked cell.
+      const anchorId = state.selectedCellIds[0] ?? action.id;
+      const order = state.cells
+        .slice()
+        .sort((a, b) =>
+          a.rowStart !== b.rowStart
+            ? a.rowStart - b.rowStart
+            : a.colStart - b.colStart,
+        );
+      const aIdx = order.findIndex((c) => c.id === anchorId);
+      const bIdx = order.findIndex((c) => c.id === action.id);
+      if (aIdx < 0 || bIdx < 0) {
+        return { ...state, selectedCellIds: [action.id] };
+      }
+      const lo = Math.min(aIdx, bIdx);
+      const hi = Math.max(aIdx, bIdx);
+      const range = order.slice(lo, hi + 1).map((c) => c.id);
+      // Keep the anchor as the primary so the inspector keeps its source.
+      const ids = anchorId
+        ? [anchorId, ...range.filter((id) => id !== anchorId)]
+        : range;
+      return { ...state, selectedCellIds: ids };
+    }
+    case 'MOVE_CELL_DROP': {
+      // Move a cell to a new (col, row) anchor; cells overlapping the new
+      // position are pushed away by reflowAroundMover. Mirrors MOVE_CELL but
+      // preserves spans by clamping into the existing grid first.
+      const target = state.cells.find((c) => c.id === action.id);
+      if (!target) return state;
+      const colStart = Math.max(
+        1,
+        Math.min(action.col, state.grid.cols - target.colSpan + 1),
+      );
+      const rowStart = Math.max(
+        1,
+        Math.min(action.row, state.grid.rows - target.rowSpan + 1),
+      );
+      if (colStart === target.colStart && rowStart === target.rowStart) return state;
+      const cells = state.cells.map((c) =>
+        c.id === action.id
+          ? { ...c, colStart, rowStart, dx: 0, dy: 0, dw: 0, dh: 0 }
+          : c,
+      );
+      const reflowed = reflowAroundMover(cells, state.grid, action.id, true);
+      if (!reflowed) return state;
+      return { ...state, grid: reflowed.grid, cells: reflowed.cells };
+    }
     case 'MERGE_CELLS': {
       const ids = action.ids;
       if (ids.length < 2) return state;
@@ -1350,87 +1490,118 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const isRow = action.axis === 'row';
       const R = isRow ? target.rowStart : target.colStart;
       const S = isRow ? target.rowSpan : target.colSpan;
-      const inserted = N - 1;
+      const bandStart = R; // first track of target's band (1-based)
+      const bandEnd = R + S - 1; // last track of target's band (1-based)
 
-      // Insert (N-1) new tracks at the END of the target's band so all cells
-      // above the band stay anchored, cells fully below shift, and cells that
-      // cross the band stretch by the inserted count.
-      const insertAfter = R + S - 1; // last track index covered by target
+      // Strategy: REPLACE the target's S band tracks with N tracks of equal
+      // weight = bandTotal/N. Each sub-cell occupies exactly one of the N
+      // new tracks → equal halves AND together they cover the SAME pixel
+      // rect the target had before the split (band total weight is
+      // preserved). Tracks outside the band keep their old weights, so
+      // cells fully outside the band don't move.
+      //
+      // Cells crossing the band have their colStart/colEnd snapped to the
+      // nearest new track boundary (proportional to where they sat within
+      // the OLD band by cumulative weight). For uniform band weights this
+      // is identity; for non-uniform weights the cell's edge may shift by
+      // up to half a new track — acceptable, and avoids the alternative
+      // (overlap with sub-cells / unequal sub-cells).
+      const sizes = isRow
+        ? trackSizes(state.grid.rowSizes, state.grid.rows)
+        : trackSizes(state.grid.colSizes, state.grid.cols);
+      const bandWeights = sizes.slice(bandStart - 1, bandEnd);
+      const bandTotal = bandWeights.reduce((a, b) => a + b, 0) || S;
+      const newTrackWeight = bandTotal / N;
+      const newBandTracks = new Array<number>(N).fill(newTrackWeight);
+
+      // Cumulative band weights: cum[i] = sum(bandWeights[0..i-1]).
+      // cum[0] = 0, cum[S] = bandTotal.
+      const cum: number[] = [0];
+      for (const w of bandWeights) cum.push(cum[cum.length - 1] + w);
+
+      // For an OLD 1-based grid index `k` inside the band, return the
+      // 0..N offset within the new band that best matches the old position
+      // of either its START edge (atEnd=false → use cum[k - R]) or its
+      // END edge (atEnd=true → use cum[k - R + 1]).
+      const snapInBand = (k: number, atEnd: boolean): number => {
+        const idx = k - R + (atEnd ? 1 : 0);
+        const safe = Math.max(0, Math.min(S, idx));
+        const p = cum[safe] / (bandTotal || 1);
+        const off = Math.round(p * N);
+        return Math.max(0, Math.min(N, off));
+      };
+      const remapStart = (k: number): number => {
+        if (k < bandStart) return k;
+        if (k > bandEnd) return k + (N - S);
+        return bandStart + snapInBand(k, false);
+      };
+      const remapEnd = (k: number): number => {
+        if (k < bandStart) return k;
+        if (k > bandEnd) return k + (N - S);
+        return bandStart + snapInBand(k, true) - 1;
+      };
 
       const otherCells: Cell[] = [];
       for (const c of state.cells) {
         if (c.id === target.id) continue;
         if (isRow) {
-          if (c.rowStart > insertAfter) {
-            otherCells.push({ ...c, rowStart: c.rowStart + inserted });
-          } else if (c.rowStart + c.rowSpan - 1 >= R) {
-            otherCells.push({ ...c, rowSpan: c.rowSpan + inserted });
-          } else {
-            otherCells.push(c);
-          }
+          const newStart = remapStart(c.rowStart);
+          const newEnd = remapEnd(c.rowStart + c.rowSpan - 1);
+          otherCells.push({
+            ...c,
+            rowStart: newStart,
+            rowSpan: Math.max(1, newEnd - newStart + 1),
+          });
         } else {
-          if (c.colStart > insertAfter) {
-            otherCells.push({ ...c, colStart: c.colStart + inserted });
-          } else if (c.colStart + c.colSpan - 1 >= R) {
-            otherCells.push({ ...c, colSpan: c.colSpan + inserted });
-          } else {
-            otherCells.push(c);
-          }
+          const newStart = remapStart(c.colStart);
+          const newEnd = remapEnd(c.colStart + c.colSpan - 1);
+          otherCells.push({
+            ...c,
+            colStart: newStart,
+            colSpan: Math.max(1, newEnd - newStart + 1),
+          });
         }
       }
 
-      // Replace target with N sub-cells, splitting the (S + inserted) tracks
-      // evenly across N children. Image (if any) is duplicated into each.
-      const totalSpan = S + inserted; // = S + N - 1
-      const baseSpan = Math.floor(totalSpan / N);
-      const rem = totalSpan % N;
-      let cursor = R;
+      // Replace target with N equal-size sub-cells. Each sub-cell occupies
+      // exactly ONE of the N new tracks within the band, in the same row /
+      // column outside the split axis as the target. Together they cover
+      // the SAME pixel rect the target had — no growth, no shrink, no drift.
       const subs: Cell[] = [];
       for (let i = 0; i < N; i += 1) {
-        const span = baseSpan + (i < rem ? 1 : 0);
         const sub: Cell = {
           ...target,
           id: i === 0 ? target.id : uid(),
-          rowStart: isRow ? cursor : target.rowStart,
-          colStart: isRow ? target.colStart : cursor,
-          rowSpan: isRow ? span : target.rowSpan,
-          colSpan: isRow ? target.colSpan : span,
-          // Pixel offsets don't make sense across new tracks; reset.
+          rowStart: isRow ? bandStart + i : target.rowStart,
+          colStart: isRow ? target.colStart : bandStart + i,
+          rowSpan: isRow ? 1 : target.rowSpan,
+          colSpan: isRow ? target.colSpan : 1,
+          // Pixel offsets reset — the sub-cell exactly fills its new track.
           dx: 0,
           dy: 0,
           dw: 0,
           dh: 0,
         };
         subs.push(sub);
-        cursor += span;
       }
 
-      // Update grid track sizes: replace the target's S original entries with
-      // (S + inserted) entries, all sharing the band's original total weight
-      // so other tracks' weights — and visual sizes — don't change.
+      // Update grid track sizes: replace the band's S original tracks with
+      // N equal-weight tracks summing to the band's original total weight.
+      // Tracks outside the band keep their old weights, so the canvas
+      // doesn't change overall size.
       const nextGrid: GridConfig = { ...state.grid };
+      const newSizes = [
+        ...sizes.slice(0, bandStart - 1),
+        ...newBandTracks,
+        ...sizes.slice(bandEnd),
+      ];
+      const delta = N - S;
       if (isRow) {
-        nextGrid.rows = state.grid.rows + inserted;
-        const rowH = trackSizes(state.grid.rowSizes, state.grid.rows);
-        const bandWeight = rowH.slice(R - 1, R - 1 + S).reduce((a, b) => a + b, 0) || S;
-        const eachWeight = bandWeight / totalSpan;
-        const replacement = new Array<number>(totalSpan).fill(eachWeight);
-        nextGrid.rowSizes = [
-          ...rowH.slice(0, R - 1),
-          ...replacement,
-          ...rowH.slice(R - 1 + S),
-        ];
+        nextGrid.rows = state.grid.rows + delta;
+        nextGrid.rowSizes = newSizes;
       } else {
-        nextGrid.cols = state.grid.cols + inserted;
-        const colW = trackSizes(state.grid.colSizes, state.grid.cols);
-        const bandWeight = colW.slice(R - 1, R - 1 + S).reduce((a, b) => a + b, 0) || S;
-        const eachWeight = bandWeight / totalSpan;
-        const replacement = new Array<number>(totalSpan).fill(eachWeight);
-        nextGrid.colSizes = [
-          ...colW.slice(0, R - 1),
-          ...replacement,
-          ...colW.slice(R - 1 + S),
-        ];
+        nextGrid.cols = state.grid.cols + delta;
+        nextGrid.colSizes = newSizes;
       }
 
       return {

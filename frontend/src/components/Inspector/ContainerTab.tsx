@@ -8,7 +8,7 @@ import type {
   ShapeId,
   Watermark,
 } from '@/types';
-import { ASPECT_RATIOS } from '@/state/presets';
+import { ASPECT_RATIOS, dimensionsFor } from '@/state/presets';
 import { SHAPES } from '@/state/shapes';
 import { Slider } from '@/components/controls/Slider';
 import { Seg } from '@/components/controls/Seg';
@@ -31,25 +31,32 @@ const WATERMARK_FONT_CHOICES: { value: string; label: string }[] = [
 interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
+  uploading?: boolean;
+  setUploading?: (v: boolean) => void;
 }
 
-export function ContainerTab({ state, dispatch }: Props) {
+export function ContainerTab({ state, dispatch, uploading = false, setUploading }: Props) {
   const c = state.container;
   const set = (patch: Partial<Container>) => dispatch({ type: 'SET_CONTAINER', patch });
   const setGrid = (patch: Partial<GridConfig>) => dispatch({ type: 'SET_GRID', patch });
+  const containerDims = dimensionsFor(c.aspect, state.output.baseSize);
 
   const pickBgImage = () => {
+    if (uploading) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
+      setUploading?.(true);
       try {
         const img = await ingestFile(f);
         set({ bgImage: img });
       } catch (e) {
         console.error('bg upload failed', e);
+      } finally {
+        setUploading?.(false);
       }
     };
     input.click();
@@ -104,6 +111,16 @@ export function ContainerTab({ state, dispatch }: Props) {
             </option>
           ))}
         </select>
+        <div
+          style={{
+            marginTop: 8,
+            fontFamily: 'var(--mono)',
+            fontSize: 11,
+            color: 'var(--text-3)',
+          }}
+        >
+          {containerDims.w} × {containerDims.h} px
+        </div>
       </div>
 
       <div className="section">
@@ -190,8 +207,13 @@ export function ContainerTab({ state, dispatch }: Props) {
               </button>
             </div>
           ) : (
-            <button className="btn" style={{ width: '100%' }} onClick={pickBgImage}>
-              <ImageIcon size={14} /> Upload image…
+            <button
+              className="btn"
+              style={{ width: '100%' }}
+              onClick={pickBgImage}
+              disabled={uploading}
+            >
+              <ImageIcon size={14} /> {uploading ? 'Uploading…' : 'Upload image…'}
             </button>
           )}
         </div>
@@ -251,27 +273,36 @@ export function ContainerTab({ state, dispatch }: Props) {
         </div>
       </div>
 
-      <WatermarkSection state={state} dispatch={dispatch} />
+      <WatermarkSection
+        state={state}
+        dispatch={dispatch}
+        uploading={uploading}
+        setUploading={setUploading}
+      />
     </>
   );
 }
 
-function WatermarkSection({ state, dispatch }: Props) {
+function WatermarkSection({ state, dispatch, uploading = false, setUploading }: Props) {
   const w = state.container.watermark ?? DEFAULT_WATERMARK;
   const setW = (patch: Partial<Watermark>) => dispatch({ type: 'SET_WATERMARK', patch });
 
   const pickWatermarkImage = () => {
+    if (uploading) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
+      setUploading?.(true);
       try {
         const img = await ingestFile(f);
         setW({ image: img, kind: 'image' });
       } catch (e) {
         console.error('watermark upload failed', e);
+      } finally {
+        setUploading?.(false);
       }
     };
     input.click();
@@ -391,8 +422,13 @@ function WatermarkSection({ state, dispatch }: Props) {
                   </button>
                 </div>
               ) : (
-                <button className="btn" style={{ width: '100%' }} onClick={pickWatermarkImage}>
-                  <ImageIcon size={14} /> Upload watermark…
+                <button
+                  className="btn"
+                  style={{ width: '100%' }}
+                  onClick={pickWatermarkImage}
+                  disabled={uploading}
+                >
+                  <ImageIcon size={14} /> {uploading ? 'Uploading…' : 'Upload watermark…'}
                 </button>
               )}
             </div>

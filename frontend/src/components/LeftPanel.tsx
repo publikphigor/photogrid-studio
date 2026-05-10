@@ -11,13 +11,17 @@ import { PresetMini } from './PresetMini';
 interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
+  /** True while any upload is in flight; layer-add buttons are disabled so a
+   *  user can't fire a structural change mid-upload that would orphan an
+   *  in-flight image. */
+  uploading?: boolean;
 }
 
 type ShuffleMode = 'random' | 'squares' | 'equal';
 
 const MAX_RAND_CELLS = 200;
 
-export function LeftPanel({ state, dispatch }: Props) {
+export function LeftPanel({ state, dispatch, uploading = false }: Props) {
   const [saved, setSaved] = useState<SavedTemplate[]>([]);
   const [randRaw, setRandRaw] = useState(() => String(Math.max(1, state.cells.length)));
   const [mode, setMode] = useState<ShuffleMode>('random');
@@ -124,7 +128,7 @@ export function LeftPanel({ state, dispatch }: Props) {
           ))}
         </div>
 
-        <div className="pane-header">Shuffle</div>
+        <div className="pane-header">Generate template</div>
         <div className="px-3 py-2 pb-3.5 flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <input
@@ -150,7 +154,7 @@ export function LeftPanel({ state, dispatch }: Props) {
                     : 'Generate a random layout (existing images stay)'
               }
             >
-              <Shuffle size={14} /> Shuffle
+              <Shuffle size={14} /> Generate
             </button>
           </div>
           <div
@@ -245,7 +249,8 @@ export function LeftPanel({ state, dispatch }: Props) {
             className="icon-btn"
             style={{ width: 22, height: 22 }}
             onClick={() => dispatch({ type: 'ADD_TEXT_LAYER' })}
-            title="Add text layer"
+            disabled={uploading}
+            title={uploading ? 'Uploading…' : 'Add text layer'}
           >
             <Type size={13} />
           </button>
@@ -253,7 +258,8 @@ export function LeftPanel({ state, dispatch }: Props) {
             className="icon-btn"
             style={{ width: 22, height: 22 }}
             onClick={() => dispatch({ type: 'ADD_CELL' })}
-            title="Add cell"
+            disabled={uploading}
+            title={uploading ? 'Uploading…' : 'Add cell'}
           >
             <Plus size={14} />
           </button>
@@ -281,13 +287,15 @@ export function LeftPanel({ state, dispatch }: Props) {
             <div
               key={c.id}
               className={`layer${state.selectedCellIds.includes(c.id) ? ' active' : ''}`}
-              onClick={(e) =>
-                dispatch(
-                  e.shiftKey
-                    ? { type: 'SELECT_TOGGLE', id: c.id }
-                    : { type: 'SELECT', id: c.id },
-                )
-              }
+              onClick={(e) => {
+                if (e.shiftKey) {
+                  dispatch({ type: 'SELECT_RANGE', id: c.id });
+                } else if (e.metaKey || e.ctrlKey) {
+                  dispatch({ type: 'SELECT_TOGGLE', id: c.id });
+                } else {
+                  dispatch({ type: 'SELECT', id: c.id });
+                }
+              }}
             >
               <div
                 className="thumb"

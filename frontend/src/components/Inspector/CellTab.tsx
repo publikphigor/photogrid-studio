@@ -16,6 +16,7 @@ import { ingestFile } from '@/api/client';
 import {
   DEFAULT_FILTERS,
   cellPixelSize,
+  computeCellRect,
   coverFitScale,
   filtersToCss,
   getCellFilters,
@@ -25,9 +26,11 @@ import { dimensionsFor } from '@/state/presets';
 interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
+  uploading?: boolean;
+  setUploading?: (v: boolean) => void;
 }
 
-export function CellTab({ state, dispatch }: Props) {
+export function CellTab({ state, dispatch, uploading = false, setUploading }: Props) {
   const selectedIds = state.selectedCellIds;
   const cell = state.cells.find((c) => c.id === selectedIds[0]);
   const multi = selectedIds.length >= 2;
@@ -60,12 +63,14 @@ export function CellTab({ state, dispatch }: Props) {
   };
 
   const onPick = () => {
+    if (uploading) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
+      setUploading?.(true);
       try {
         const img = await ingestFile(file);
         const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
@@ -84,6 +89,8 @@ export function CellTab({ state, dispatch }: Props) {
         });
       } catch (e) {
         console.error('upload failed', e);
+      } finally {
+        setUploading?.(false);
       }
     };
     input.click();
@@ -171,8 +178,8 @@ export function CellTab({ state, dispatch }: Props) {
               No image yet — drop one on the cell or upload below.
             </p>
           )}
-          <button className="btn w-full" onClick={onPick}>
-            <Upload size={14} /> {cell.image ? 'Replace' : 'Upload'}
+          <button className="btn w-full" onClick={onPick} disabled={uploading}>
+            <Upload size={14} /> {uploading ? 'Uploading…' : cell.image ? 'Replace' : 'Upload'}
           </button>
         </div>
       )}
@@ -328,6 +335,7 @@ export function CellTab({ state, dispatch }: Props) {
       {!multi && (
         <div className="section">
           <h4 className="section-title">Position</h4>
+          <CellSize cell={cell} state={state} />
           <div className="grid grid-cols-2 gap-x-2 gap-y-2">
             <PositionField
               label="Span W"
@@ -479,6 +487,34 @@ function SplitControls({ onSplit }: { onSplit: (axis: 'row' | 'col', count: numb
           <Columns size={14} /> Cols
         </button>
       </div>
+    </div>
+  );
+}
+
+function CellSize({ cell, state }: { cell: Cell; state: PhotoGridState }) {
+  const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
+  const innerW =
+    dims.w - state.container.padding * 2 - state.container.gap * (state.grid.cols - 1);
+  const innerH =
+    dims.h - state.container.padding * 2 - state.container.gap * (state.grid.rows - 1);
+  const rect = computeCellRect(
+    cell,
+    state.grid,
+    innerW,
+    innerH,
+    state.container.padding,
+    state.container.gap,
+  );
+  return (
+    <div
+      style={{
+        marginBottom: 10,
+        fontFamily: 'var(--mono)',
+        fontSize: 11,
+        color: 'var(--text-3)',
+      }}
+    >
+      {Math.round(rect.w)} × {Math.round(rect.h)} px
     </div>
   );
 }

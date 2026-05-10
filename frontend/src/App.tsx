@@ -173,9 +173,20 @@ export function App() {
         className="grid h-[calc(100vh-48px)] min-h-0"
         style={{ gridTemplateColumns: '248px 1fr 320px' }}
       >
-        <LeftPanel state={state} dispatch={dispatch} />
-        <StageCanvas state={state} dispatch={dispatch} />
-        <Inspector state={state} dispatch={dispatch} exportInfo={exportInfo} />
+        <LeftPanel state={state} dispatch={dispatch} uploading={uploading} />
+        <StageCanvas
+          state={state}
+          dispatch={dispatch}
+          uploading={uploading}
+          setUploading={setUploading}
+        />
+        <Inspector
+          state={state}
+          dispatch={dispatch}
+          exportInfo={exportInfo}
+          uploading={uploading}
+          setUploading={setUploading}
+        />
       </div>
       {toast && <Toast message={toast} />}
     </div>

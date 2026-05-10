@@ -11,9 +11,11 @@ interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
   exportInfo: { lastSize?: number; rendererName?: string; elapsedMs?: number };
+  uploading?: boolean;
+  setUploading?: (v: boolean) => void;
 }
 
-export function Inspector({ state, dispatch, exportInfo }: Props) {
+export function Inspector({ state, dispatch, exportInfo, uploading = false, setUploading }: Props) {
   const [tab, setTab] = useState<TabId>('container');
   const primaryId = state.selectedCellIds[0] ?? null;
   const selected = state.cells.find((c) => c.id === primaryId);
@@ -55,8 +57,22 @@ export function Inspector({ state, dispatch, exportInfo }: Props) {
         </button>
       </div>
       <div className="pane-body">
-        {tab === 'container' && <ContainerTab state={state} dispatch={dispatch} />}
-        {tab === 'cell' && <CellTab state={state} dispatch={dispatch} />}
+        {tab === 'container' && (
+          <ContainerTab
+            state={state}
+            dispatch={dispatch}
+            uploading={uploading}
+            setUploading={setUploading}
+          />
+        )}
+        {tab === 'cell' && (
+          <CellTab
+            state={state}
+            dispatch={dispatch}
+            uploading={uploading}
+            setUploading={setUploading}
+          />
+        )}
         {tab === 'canvas' && <CanvasTab state={state} dispatch={dispatch} />}
         {tab === 'output' && <OutputTab state={state} dispatch={dispatch} exportInfo={exportInfo} />}
       </div>
