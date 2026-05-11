@@ -23,3 +23,4 @@ package-lock.json
 
 # Local cache (mirrors the Docker volume in some workflows)
 data/
+settings.local.json
