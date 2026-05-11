@@ -115,13 +115,11 @@ async def export(req: ExportRequest, request: Request) -> Response:
         },
     )
 
-    ext = state.output.format
-    filename = f"photogrid-{int(time.time())}.{ext}"
+    # Frontend owns the download filename via a.download; don't set Content-Disposition.
     return Response(
         content=data,
         media_type=mime,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Photogrid-Bytes": str(len(data)),
             "X-Photogrid-Renderer": renderer.name,
             "X-Photogrid-Elapsed-Ms": str(elapsed_ms),
