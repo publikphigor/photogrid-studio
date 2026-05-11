@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .analytics import init_posthog, shutdown_posthog
 from .api import export, health, images
 from .cache.disk import sweep_cache
 from .config import settings
@@ -29,6 +30,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     log.info("startup", version=__version__, cache_dir=str(settings.cache_dir))
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    init_posthog(settings.posthog_api_key, settings.posthog_host)
     task = asyncio.create_task(_sweeper(), name="cache-sweeper")
     try:
         yield
@@ -36,6 +38,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         task.cancel()
         with contextlib.suppress(BaseException):
             await task
+        shutdown_posthog()
         log.info("shutdown")
 
 

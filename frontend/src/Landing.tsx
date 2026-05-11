@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect } from "react";
 import {
   ArrowRight,
   Eye,
@@ -12,14 +12,14 @@ import {
   Shapes,
   Sliders,
   Type,
-} from 'lucide-react';
+} from "lucide-react";
 
-const REPO_URL = 'https://github.com/publikphigor/photogrid-studio';
-const DEV_URL = 'https://github.com/publikphigor';
+const REPO_URL = "https://github.com/publikphigor/photogrid-studio";
+const DEV_URL = "https://github.com/publikphigor";
 
 export function Landing() {
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    document.documentElement.setAttribute("data-theme", "dark");
   }, []);
 
   return (
@@ -37,10 +37,15 @@ function Nav() {
   return (
     <header
       className="sticky top-0 z-40 bg-bg/85 backdrop-blur"
-      style={{ boxShadow: '0 1px 0 rgba(0,0,0,0.6), 0 6px 18px rgba(0,0,0,0.35)' }}
+      style={{
+        boxShadow: "0 1px 0 rgba(0,0,0,0.6), 0 6px 18px rgba(0,0,0,0.35)",
+      }}
     >
       <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
-        <a href="/" className="flex items-center gap-2.5 text-[14px] font-semibold tracking-tight">
+        <a
+          href="/"
+          className="flex items-center gap-2.5 text-[14px] font-semibold tracking-tight"
+        >
           <Mark />
           PhotoGrid Studio
         </a>
@@ -92,7 +97,7 @@ function Hero() {
           <a
             href="/app"
             className="inline-flex h-11 items-center gap-2 rounded-md bg-accent px-5 text-[14px] font-semibold text-[color:var(--primary-fg)] transition hover:bg-accent-2"
-            style={{ boxShadow: '0 10px 30px rgba(0,0,0,0.35)' }}
+            style={{ boxShadow: "0 10px 30px rgba(0,0,0,0.35)" }}
           >
             Launch the editor
             <ArrowRight size={16} />
@@ -111,9 +116,9 @@ function Hero() {
         <div className="mt-6 flex items-start gap-2 text-[13px] text-text-3">
           <LockKeyhole size={14} className="mt-[3px] flex-none text-text-2" />
           <p>
-            No sign-up, no analytics. Photos clear themselves from the temporary
-            cache after a day, and you can run the whole thing on your own
-            machine if you want.
+            No sign-up. Photos clear themselves from the temporary cache after a
+            day, and you can run the whole thing on your own machine if you
+            want.
           </p>
         </div>
 
@@ -153,7 +158,10 @@ function FakeLeftPanel() {
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="aspect-square rounded border border-line bg-panel-2" />
+          <div
+            key={i}
+            className="aspect-square rounded border border-line bg-panel-2"
+          />
         ))}
       </div>
     </div>
@@ -166,12 +174,21 @@ function FakeStage() {
       <div className="absolute inset-6 sm:inset-10">
         <div
           className="grid h-full w-full gap-1.5"
-          style={{ gridTemplateColumns: '1.4fr 1fr 1fr', gridTemplateRows: '1fr 1fr 1fr' }}
+          style={{
+            gridTemplateColumns: "1.4fr 1fr 1fr",
+            gridTemplateRows: "1fr 1fr 1fr",
+          }}
         >
-          <Cell color="#e8a96a" style={{ gridColumn: '1', gridRow: '1 / span 3' }} />
+          <Cell
+            color="#e8a96a"
+            style={{ gridColumn: "1", gridRow: "1 / span 3" }}
+          />
           <Cell color="#5f89c6" />
           <Cell color="#9d72c0" />
-          <Cell color="#d96c63" style={{ gridColumn: '2 / span 2', gridRow: '2' }} />
+          <Cell
+            color="#d96c63"
+            style={{ gridColumn: "2 / span 2", gridRow: "2" }}
+          />
           <Cell color="#6cb697" />
           <Cell color="#e0b25c" />
         </div>
@@ -180,7 +197,13 @@ function FakeStage() {
   );
 }
 
-function Cell({ color, style }: { color: string; style?: React.CSSProperties }) {
+function Cell({
+  color,
+  style,
+}: {
+  color: string;
+  style?: React.CSSProperties;
+}) {
   return (
     <div
       className="overflow-hidden rounded-[3px]"
@@ -222,75 +245,63 @@ function Row({ label, value }: { label: string; value: string }) {
 const FEATURES = [
   {
     icon: ImageIcon,
-    title: 'Original-quality exports',
-    body:
-      'Your photos go out at their full size. No downscaling, no fuzzy edges — the exported image is as sharp as the files you put in.',
+    title: "Original-quality exports",
+    body: "Your photos go out at their full size. No downscaling, no fuzzy edges — the exported image is as sharp as the files you put in.",
   },
   {
     icon: Eye,
-    title: 'Sharp on-screen, too',
-    body:
-      'The canvas shows your photos at their real resolution, so what you arrange is what you get. Zoom in to check details before you save.',
+    title: "Sharp on-screen, too",
+    body: "The canvas shows your photos at their real resolution, so what you arrange is what you get. Zoom in to check details before you save.",
   },
   {
     icon: Layout,
-    title: 'Free-form layouts',
-    body:
-      'Pick a preset or build your own. Drag photos around, swap them, merge cells together, or split one into halves. Resize any cell from any edge.',
+    title: "Free-form layouts",
+    body: "Pick a preset or build your own. Drag photos around, swap them, merge cells together, or split one into halves. Resize any cell from any edge.",
   },
   {
     icon: Shapes,
-    title: 'Shapes and borders',
-    body:
-      'Crop the whole canvas — or any single cell — to a circle, heart, hexagon and more. Add gaps, rounded corners, and outlines to taste.',
+    title: "Shapes and borders",
+    body: "Crop the whole canvas — or any single cell — to a circle, heart, hexagon and more. Add gaps, rounded corners, and outlines to taste.",
   },
   {
     icon: Sliders,
-    title: 'Color and filters',
-    body:
-      'Tune brightness, contrast, saturation, blur and a few more per cell. What you see on the canvas is what you get in the file.',
+    title: "Color and filters",
+    body: "Tune brightness, contrast, saturation, blur and a few more per cell. What you see on the canvas is what you get in the file.",
   },
   {
     icon: Type,
-    title: 'Text and watermarks',
-    body:
-      'Drop captions, titles or watermarks anywhere. Pick a font, change the color, rotate it, fade it. Place text behind or in front of your photos.',
+    title: "Text and watermarks",
+    body: "Drop captions, titles or watermarks anywhere. Pick a font, change the color, rotate it, fade it. Place text behind or in front of your photos.",
   },
   {
     icon: ImageIcon,
-    title: 'Backgrounds',
-    body:
-      'Add a background photo, blur it, dim it, tint it. Useful for collages, moodboards, or putting your subject against a softer backdrop.',
+    title: "Backgrounds",
+    body: "Add a background photo, blur it, dim it, tint it. Useful for collages, moodboards, or putting your subject against a softer backdrop.",
   },
   {
     icon: MousePointer2,
-    title: 'Select many, edit once',
-    body:
-      'Shift-click to pick a range of cells, ⌘-click to add or remove from the selection, then change a setting to apply it to every selected cell.',
+    title: "Select many, edit once",
+    body: "Shift-click to pick a range of cells, ⌘-click to add or remove from the selection, then change a setting to apply it to every selected cell.",
   },
   {
     icon: Save,
-    title: 'Save your layouts',
-    body:
-      'Templates save to your browser so you can come back to the same arrangement later. Sixty steps of undo and redo keep experiments safe.',
+    title: "Save your layouts",
+    body: "Templates save to your browser so you can come back to the same arrangement later. Sixty steps of undo and redo keep experiments safe.",
   },
   {
     icon: LockKeyhole,
-    title: 'No accounts, no tracking',
-    body:
-      'Nothing to sign up for. No analytics. Photos are kept in a temporary cache while you work and clear themselves out after a day.',
+    title: "No accounts, no tracking",
+    body: "Nothing to sign up for. No analytics. Photos are kept in a temporary cache while you work and clear themselves out after a day.",
   },
   {
     icon: Layers,
-    title: 'Works with big photos',
-    body:
-      'Phone shots and DSLR raw exports both work. The app keeps full-resolution sources around so you can export huge prints when you need to.',
+    title: "Works with big photos",
+    body: "Phone shots and DSLR raw exports both work. The app keeps full-resolution sources around so you can export huge prints when you need to.",
   },
   {
     icon: Github,
-    title: 'Open source',
-    body:
-      'MIT licensed. Fork it, change it, host it on your own server — the source is on GitHub and the deploy is a couple of commands.',
+    title: "Open source",
+    body: "MIT licensed. Fork it, change it, host it on your own server — the source is on GitHub and the deploy is a couple of commands.",
   },
 ];
 
@@ -351,7 +362,7 @@ function Cta() {
             <a
               href="/app"
               className="inline-flex h-12 items-center gap-2 whitespace-nowrap rounded-md bg-accent px-6 text-[15px] font-semibold text-[color:var(--primary-fg)] transition hover:bg-accent-2"
-              style={{ boxShadow: '0 12px 32px rgba(0,0,0,0.45)' }}
+              style={{ boxShadow: "0 12px 32px rgba(0,0,0,0.45)" }}
             >
               Launch the editor
               <ArrowRight size={16} />

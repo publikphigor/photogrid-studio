@@ -3,10 +3,11 @@ from __future__ import annotations
 import io
 import mimetypes
 
-from fastapi import APIRouter, HTTPException, Response, UploadFile
+from fastapi import APIRouter, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, ImageOps
 
+from ..analytics import capture
 from ..cache import DiskCache, find_cached
 from ..config import settings
 from ..logging_setup import log
@@ -37,13 +38,17 @@ def _detect_mime(head: bytes) -> str | None:
 
 
 @router.post("/images", response_model=UploadResponse, status_code=200)
-async def upload_image(file: UploadFile) -> UploadResponse:
+async def upload_image(file: UploadFile, request: Request) -> UploadResponse:
+    distinct_id = request.headers.get("X-PostHog-Distinct-Id", "photogrid-anon")
+
     if file.size and file.size > settings.max_upload_bytes:
+        capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "file_too_large"})
         raise HTTPException(status_code=413, detail="file too large")
 
     head = await file.read(4096)
     mime = _detect_mime(head) or file.content_type or ""
     if mime not in _ALLOWED_MIMES:
+        capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "unsupported_mime", "mime_type": mime})
         raise HTTPException(status_code=415, detail=f"unsupported mime: {mime!r}")
 
     # Reassemble: head + remaining stream
@@ -62,9 +67,11 @@ async def upload_image(file: UploadFile) -> UploadResponse:
     try:
         stored = cache.store_stream(_Stream(head, file.file), mime, settings.max_upload_bytes)
     except ValueError as e:
+        capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "file_too_large"})
         raise HTTPException(status_code=413, detail=str(e)) from e
     except Exception as e:
         log.exception("upload.failed", error=str(e))
+        capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "server_error"})
         raise HTTPException(status_code=500, detail="upload failed") from e
 
     # Probe dimensions (Pillow handles HEIC via pillow-heif registered in renderer).
@@ -82,9 +89,15 @@ async def upload_image(file: UploadFile) -> UploadResponse:
             stored.path.unlink(missing_ok=True)
         except Exception:
             pass
+        capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "not_decodable", "mime_type": mime})
         raise HTTPException(status_code=415, detail="image not decodable") from e
 
     log.info("upload.ok", hash=stored.hash, size=stored.size, mime=mime, w=w, h=h)
+    capture(
+        "image uploaded",
+        distinct_id=distinct_id,
+        properties={"mime_type": mime, "file_size_bytes": stored.size, "width": w, "height": h},
+    )
     return UploadResponse(hash=stored.hash, mime=mime, w=w, h=h, size=stored.size)
 
 

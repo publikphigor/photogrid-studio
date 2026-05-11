@@ -10,6 +10,10 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG VITE_API_BASE=/api
 ENV VITE_API_BASE=$VITE_API_BASE
+ARG VITE_POSTHOG_KEY=
+ENV VITE_POSTHOG_KEY=$VITE_POSTHOG_KEY
+ARG VITE_POSTHOG_HOST=https://eu.i.posthog.com
+ENV VITE_POSTHOG_HOST=$VITE_POSTHOG_HOST
 RUN npm run build
 
 FROM nginx:1.27-alpine AS runtime

@@ -2,7 +2,10 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import { Landing } from './Landing';
+import { initPosthog } from './api/analytics';
 import './styles/index.css';
+
+initPosthog();
 
 // Routing is intentionally trivial: /app (and anything under it) renders the
 // editor; everything else renders the landing page. The two routes share a

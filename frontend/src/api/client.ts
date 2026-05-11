@@ -1,7 +1,12 @@
 import type { CellImageRef, PhotoGridState } from '@/types';
+import { distinctId } from './analytics';
 import { sha256Hex } from './hash';
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api';
+
+function posthogHeaders(): Record<string, string> {
+  return { 'X-PostHog-Distinct-Id': distinctId() };
+}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public body?: unknown) {
@@ -10,7 +15,8 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init);
+  const headers = { ...posthogHeaders(), ...(init?.headers as Record<string, string> | undefined) };
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!res.ok) {
     let body: unknown;
     try {
@@ -38,13 +44,13 @@ export async function uploadImage(file: File): Promise<UploadResult> {
 }
 
 export async function imageExists(hash: string): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/images/${hash}`, { method: 'HEAD' });
+  const res = await fetch(`${API_BASE}/images/${hash}`, { method: 'HEAD', headers: posthogHeaders() });
   return res.status === 204;
 }
 
 /** Serves the cached image bytes; returns a blob URL the cell can use as previewUrl. */
 export async function imageBlobUrl(hash: string): Promise<string | null> {
-  const res = await fetch(`${API_BASE}/images/${hash}`, { method: 'GET' });
+  const res = await fetch(`${API_BASE}/images/${hash}`, { method: 'GET', headers: posthogHeaders() });
   if (!res.ok) return null;
   const blob = await res.blob();
   return URL.createObjectURL(blob);
@@ -81,7 +87,7 @@ interface ExportResult {
 async function exportOnce(state: PhotoGridState): Promise<Response> {
   return fetch(`${API_BASE}/export`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...posthogHeaders() },
     body: JSON.stringify({ state: stripPreviewUrls(state) }),
   });
 }

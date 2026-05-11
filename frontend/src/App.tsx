@@ -9,6 +9,7 @@ import { StageCanvas } from '@/components/StageCanvas';
 import { Inspector } from '@/components/Inspector';
 import { Toast } from '@/components/Toast';
 import { exportImage, ingestFile, uploadImage } from '@/api/client';
+import { capture } from '@/api/analytics';
 import { ensureWritable, getStoredFolder, writeBlobToFolder } from '@/api/folder';
 import { formatBytes } from '@/state/presets';
 
@@ -72,6 +73,13 @@ export function App() {
 
   const handleExport = useCallback(async () => {
     setExporting(true);
+    const cellsWithImages = state.cells.filter((c) => c.image).length;
+    capture('export started', {
+      output_format: state.output.format,
+      output_scale: state.output.scale,
+      cell_count: state.cells.length,
+      cells_with_images: cellsWithImages,
+    });
     try {
       const res = await exportImage(state, async (missing) => {
         const stillMissing: string[] = [];
@@ -98,9 +106,23 @@ export function App() {
       const renameNote =
         savedAs && savedAs !== res.filename ? ` · saved as ${savedAs}` : '';
       flashToast(`Saved · ${formatBytes(res.size)}${renameNote}`);
+      capture('export succeeded', {
+        output_format: state.output.format,
+        output_scale: state.output.scale,
+        cell_count: state.cells.length,
+        cells_with_images: cellsWithImages,
+        output_bytes: res.size,
+        renderer: res.rendererName,
+        elapsed_ms: res.elapsedMs,
+      });
     } catch (e) {
       console.error(e);
       flashToast('Export failed');
+      capture('export failed', {
+        output_format: state.output.format,
+        cell_count: state.cells.length,
+        error: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setExporting(false);
     }

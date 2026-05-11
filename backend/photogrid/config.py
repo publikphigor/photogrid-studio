@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     allowed_origins: str = "*"
     sentry_dsn: str | None = None
+    posthog_api_key: str | None = None
+    posthog_host: str = "https://eu.i.posthog.com"
 
     @property
     def max_upload_bytes(self) -> int:

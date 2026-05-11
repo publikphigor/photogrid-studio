@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from PIL import Image
 
+from ..analytics import capture
 from ..cache.disk import find_cached
 from ..logging_setup import log
 from ..models import ExportRequest, MissingHashes
@@ -14,8 +15,11 @@ router = APIRouter()
 
 
 @router.post("/export", response_class=Response)
-async def export(req: ExportRequest) -> Response:
+async def export(req: ExportRequest, request: Request) -> Response:
     state = req.state
+    distinct_id = request.headers.get("X-PostHog-Distinct-Id", "photogrid-anon")
+    cell_count = len(state.cells)
+    cells_with_images = sum(1 for c in state.cells if c.image is not None)
 
     # Pre-flight: every referenced hash must be cached. Cells, the container
     # bg image, and the watermark image (if any) are all checked here so the
@@ -52,6 +56,15 @@ async def export(req: ExportRequest) -> Response:
             missing.append(ref.hash)
 
     if missing:
+        capture(
+            "export preflight failed",
+            distinct_id=distinct_id,
+            properties={
+                "missing_hash_count": len(set(missing)),
+                "output_format": state.output.format,
+                "cell_count": cell_count,
+            },
+        )
         return Response(
             content=MissingHashes(missing=sorted(set(missing))).model_dump_json(),
             media_type="application/json",
@@ -73,6 +86,11 @@ async def export(req: ExportRequest) -> Response:
         )
     except Exception as e:
         log.exception("render.failed", error=str(e))
+        capture(
+            "export failed",
+            distinct_id=distinct_id,
+            properties={"output_format": state.output.format, "cell_count": cell_count},
+        )
         raise HTTPException(status_code=500, detail="render failed") from e
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -82,6 +100,19 @@ async def export(req: ExportRequest) -> Response:
         bytes=len(data),
         format=state.output.format,
         elapsed_ms=elapsed_ms,
+    )
+    capture(
+        "export completed",
+        distinct_id=distinct_id,
+        properties={
+            "output_format": state.output.format,
+            "cell_count": cell_count,
+            "cells_with_images": cells_with_images,
+            "output_scale": state.output.scale,
+            "renderer": renderer.name,
+            "elapsed_ms": elapsed_ms,
+            "output_bytes": len(data),
+        },
     )
 
     ext = state.output.format
