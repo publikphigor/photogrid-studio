@@ -1,15 +1,8 @@
-"""Optional pyvips renderer.
-
-Today this is a placeholder — when ``pyvips`` is installed and a source image
-exceeds ``VIPS_THRESHOLD_MP``, ``supports()`` returns True so it can be selected
-in the future. The actual implementation currently delegates straight to Pillow;
-treat it as a hook for when memory pressure on huge inputs becomes a real
-issue. Add the libvips composition step here at that point.
-"""
+"""Optional pyvips renderer; currently a placeholder that delegates to Pillow."""
 
 from __future__ import annotations
 
-import pyvips  # noqa: F401  (import probes presence — see renderer/__init__.py)
+import pyvips  # noqa: F401
 
 from ..config import settings
 from ..models import PhotoGridState

@@ -26,7 +26,7 @@ export function capture(
   posthog.capture(event, properties);
 }
 
-/** Stable per-browser id so backend events can be joined to the same person. */
+// Stable per-browser id so backend events join to the same person.
 export function distinctId(): string {
   if (!initialized) return "photogrid-anon";
   return posthog.get_distinct_id() ?? "photogrid-anon";

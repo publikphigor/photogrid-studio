@@ -8,10 +8,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
-/** A menu item rendered by `<ContextMenu>`. `onSelect` runs after the menu
- *  closes; `disabled` greys it out and ignores clicks; `danger` tints it red
- *  for destructive actions. `divider: true` instead of a label inserts a
- *  thin separator. */
 export interface ContextMenuItem {
   id: string;
   label?: string;
@@ -24,18 +20,13 @@ export interface ContextMenuItem {
 }
 
 interface Props {
-  /** Anchor point in viewport coordinates (`event.clientX/Y`). The menu is
-   *  positioned at this point and then nudged inwards if it would overflow
-   *  the viewport. */
   x: number;
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
 }
 
-/** Lightweight viewport-aware context menu. Renders into `document.body` via
- *  a portal so it isn't clipped by any ancestor `overflow:hidden`. Closes on
- *  outside click, Escape, or scroll. */
+// Portaled so ancestor overflow:hidden doesn't clip; closes on outside click/Esc/scroll.
 export function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number }>({

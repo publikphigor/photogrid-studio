@@ -1,7 +1,4 @@
-"""Container & cell shape masks. Geometry mirrors ``shapes.jsx`` / ``exporter.jsx``.
-
-All masks are single-channel ('L') alpha images sized exactly to (w, h).
-"""
+"""Container & cell shape masks ('L' alpha images), geometry mirrored from the frontend."""
 
 from __future__ import annotations
 
@@ -9,7 +6,7 @@ from PIL import Image, ImageChops, ImageDraw
 
 from ..models import ShapeId
 
-# Anti-alias factor: render mask at AAx and downsample with LANCZOS.
+# Render masks at AAx and downsample with LANCZOS for anti-aliasing.
 _AA = 2
 
 
@@ -25,12 +22,7 @@ def _finalize(img: Image.Image, w: int, h: int) -> Image.Image:
 
 
 def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Image.Image:
-    """Build a single-channel alpha mask for ``shape`` at (w, h).
-
-    ``corner_px`` is the corner radius in OUTPUT pixels for the 'rounded'
-    branch (the only shape that consults it). Pass design_pixels * scale at
-    the call site so the corner radius matches the on-screen preview.
-    """
+    """Single-channel alpha mask for ``shape`` at ``(w, h)``; ``corner_px`` is OUTPUT pixels (only used by 'rounded')."""
     w = max(1, int(round(w)))
     h = max(1, int(round(h)))
 
@@ -41,8 +33,7 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Ima
     img, draw = _new_mask(w, h)
 
     if shape == "rounded":
-        # Clamp so the radius never exceeds half the shorter side (otherwise
-        # PIL renders nothing at all).
+        # PIL renders nothing when radius exceeds half the shorter side.
         max_r = min(aw, ah) // 2
         r = max(0, min(max_r, int(round(corner_px * _AA))))
         draw.rounded_rectangle((0, 0, aw - 1, ah - 1), radius=r, fill=255)
@@ -69,7 +60,6 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Ima
             fill=255,
         )
     elif shape == "arch":
-        # Round only the top corners.
         r = max(0, int(min(aw, ah) / 2))
         out = Image.new("L", (aw, ah), 0)
         ImageDraw.Draw(out).rounded_rectangle(
@@ -78,20 +68,15 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Ima
             fill=255,
             corners=(True, True, False, False),
         )
-        # Force the bottom half opaque to match a half-arch (top circular, bottom flat).
         ImageDraw.Draw(out).rectangle((0, r, aw, ah), fill=255)
         img = out
     elif shape == "blob":
-        # Organic shape approximated by overlapping ellipses + a central pad.
         draw.rectangle((aw * 0.12, ah * 0.12, aw * 0.88, ah * 0.88), fill=255)
         draw.ellipse((0, ah * 0.10, aw * 0.62, ah * 0.95), fill=255)
         draw.ellipse((aw * 0.40, 0, aw, ah * 0.85), fill=255)
         draw.ellipse((aw * 0.05, ah * 0.30, aw * 0.95, ah), fill=255)
     elif shape == "heart":
-        # Sample the exact cubic bezier path the frontend uses (`shapes.ts`,
-        # heart's mask SVG) so the silhouette matches pixel-for-pixel. Source
-        # path: M50,92 C18,74 4,46 18,24 C30,6 50,12 50,32 C50,12 70,6 82,24
-        # C96,46 82,74 50,92 Z, on a 100x100 viewBox scaled into (aw, ah).
+        # Bezier sampling mirrors the frontend `shapes.ts` heart path so silhouettes match pixel-for-pixel.
         beziers = [
             ((50, 92), (18, 74), (4, 46), (18, 24)),
             ((18, 24), (30, 6), (50, 12), (50, 32)),
@@ -100,7 +85,7 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Ima
         ]
         sx, sy = aw / 100.0, ah / 100.0
         pts: list[tuple[float, float]] = []
-        steps = 64  # plenty of segments for a smooth silhouette at any scale
+        steps = 64
         for p0, p1, p2, p3 in beziers:
             for i in range(steps):
                 t = i / steps
@@ -194,10 +179,7 @@ def make_container_mask(shape: ShapeId, w: int, h: int, corner_px: float) -> Ima
 
 
 def make_cell_mask(w: int, h: int, radius_px: float) -> Image.Image:
-    """Rounded-rect alpha mask for a cell. ``radius_px`` is in OUTPUT pixels;
-    callers pass ``cell.cellRadius * scale`` so the corner curve matches the
-    pixel radius the on-screen preview drew.
-    """
+    """Rounded-rect alpha mask for a cell; ``radius_px`` is in OUTPUT pixels."""
     w = max(1, int(round(w)))
     h = max(1, int(round(h)))
     if radius_px <= 0:
@@ -211,29 +193,20 @@ def make_cell_mask(w: int, h: int, radius_px: float) -> Image.Image:
 
 
 def _coloured_overlay(w: int, h: int, alpha: Image.Image, color: str) -> Image.Image:
-    overlay = Image.new("RGBA", (w, h), color)  # solid colour, alpha=255
+    overlay = Image.new("RGBA", (w, h), color)
     overlay.putalpha(alpha)
     return overlay
 
 
 def _shape_band_mask(shape: ShapeId, w: int, h: int, radius_px: float, width: int) -> Image.Image:
-    """Inset stroke band of `width` px along the inside edge of the given shape.
-    Computed as ``outer_mask - inner_mask`` where ``inner_mask`` is the same
-    shape rendered into the rectangle inset by ``width`` on every side. This
-    produces a fully-opaque band (subject only to AA fade at the very edges)
-    so the exported border matches the saturation of CSS ``box-shadow inset``
-    seen in the on-screen preview — the previous MinFilter approach left the
-    band faded because the kernel min ate into the AA gradient on each edge.
-    """
+    """Inset stroke band of ``width`` px along the inside edge of ``shape`` as ``outer_mask - inner_mask``."""
     width = max(1, width)
     outer = make_container_mask(shape, w, h, radius_px)
     inner_w = max(1, w - 2 * width)
     inner_h = max(1, h - 2 * width)
     if inner_w <= 1 or inner_h <= 1:
-        return outer  # band swallows the cell entirely
-    # Inner shape is the same shape rendered into the smaller box. Trim the
-    # corner radius by `width` so the inner curve sits at uniform distance from
-    # the outer curve (not just a smaller copy with a re-scaled radius).
+        return outer
+    # Trim radius by width so the inner curve sits at uniform distance from the outer curve.
     inner_radius = max(0.0, radius_px - width)
     inner_small = make_container_mask(shape, inner_w, inner_h, inner_radius)
     inner = Image.new("L", (w, h), 0)
@@ -264,19 +237,12 @@ def stroke_cell(
     width: float,
     color: str,
 ) -> None:
-    """Draw an inset stroke that matches the cell's actual silhouette.
-    ``shape`` is the cell shape ('rect', 'rounded', 'circle', …); the band
-    follows that shape so a circular cell gets a circular stroke instead of
-    the rounded-rect outline it used to inherit when stroke_cell ignored the
-    shape. ``radius_px`` is in OUTPUT pixels (design_px * output.scale).
-    """
+    """Draw an inset stroke matching the cell silhouette; ``radius_px`` is OUTPUT pixels."""
     if width <= 0:
         return
     cx, cy, cw, ch = box
     w = max(1, int(round(cw)))
     h = max(1, int(round(ch)))
-    # 'rect' with a non-zero radius is a rounded rect; that's the same code
-    # path as 'rounded' for the band-mask helper.
     use_shape: ShapeId = shape if shape and shape != "rect" else "rounded"
     band = _shape_band_mask(use_shape, w, h, radius_px, int(round(width)))
     base.alpha_composite(

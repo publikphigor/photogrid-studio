@@ -1,7 +1,4 @@
-/** Persist a FileSystemDirectoryHandle in IndexedDB so the user only has to
- *  pick the export folder once per device. Permissions are re-requested on
- *  each launch (Chromium policy).
- */
+// Persist FSA dir handle in IndexedDB; Chromium policy re-asks permission per launch.
 
 const DB = 'photogrid-studio';
 const STORE = 'kv';
@@ -75,8 +72,7 @@ export async function pickFolder(): Promise<DirHandleLike | null> {
     const name = (e as { name?: string })?.name;
     const msg = (e as { message?: string })?.message ?? '';
     if (name === 'AbortError') return null;
-    // Chrome blocks "sensitive" folders (e.g. ~, ~/Library, system drives).
-    // Downloads is allowed in recent Chrome but some setups still flag it.
+    // Chrome blocks "sensitive" folders (~, Library, system drives).
     if (
       name === 'SecurityError' ||
       msg.toLowerCase().includes('contains system') ||
@@ -99,8 +95,7 @@ export async function clearFolder(): Promise<void> {
   await del(KEY);
 }
 
-// Never calls requestPermission — that needs a fresh user activation, and Chrome
-// sometimes hangs the promise instead of throwing when activation is gone.
+// Never calls requestPermission — Chrome can hang it when user activation lapses.
 export async function ensureWritable(handle: DirHandleLike): Promise<boolean> {
   if (!handle.queryPermission) return false;
   const cur = await handle.queryPermission({ mode: 'readwrite' });
@@ -125,8 +120,6 @@ export async function writeBlobToFolder(
   return finalName;
 }
 
-/** If `filename` already exists in `handle`, return `name_1.ext`, `name_2.ext`, etc.
- *  Walks the existing names by attempting `getFileHandle` without `create`. */
 async function uniqueFilename(handle: DirHandleLike, filename: string): Promise<string> {
   if (!(await fileExists(handle, filename))) return filename;
   const dot = filename.lastIndexOf('.');

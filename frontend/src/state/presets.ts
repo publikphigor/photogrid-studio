@@ -102,7 +102,6 @@ export function estimateFileSize(
   if (format === 'png') return Math.round(px * 2.5);
   if (format === 'jpg') return Math.round(px * (0.08 + quality * 0.55));
   if (format === 'webp') return Math.round(px * (0.05 + quality * 0.35));
-  // SVG = PNG bytes (base64-inflated by ~33%) + a few bytes of XML overhead.
   if (format === 'svg') return Math.round(px * 2.5 * 1.34);
   return Math.round(px);
 }

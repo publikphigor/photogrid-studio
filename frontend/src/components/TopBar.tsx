@@ -23,7 +23,6 @@ interface Props {
   onExport: () => void;
   exporting: boolean;
   uploading: boolean;
-  /** Tablet width — hides labels, swaps the side-panel layout for drawer toggles. */
   compact?: boolean;
   leftOpen?: boolean;
   rightOpen?: boolean;
@@ -168,7 +167,6 @@ export function TopBar({
   );
 }
 
-/** Brand mark — solid accent block with a small grid glyph. No gradient. */
 function Brand() {
   return (
     <span

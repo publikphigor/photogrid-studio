@@ -1,8 +1,4 @@
-"""CSS-filter strings → Pillow operations.
-
-Supports the exact filter list used by the prototype's Cell tab
-(``panels.jsx`` CellTab) plus a permissive parser for free-form strings.
-"""
+"""CSS-filter strings → Pillow operations."""
 
 from __future__ import annotations
 
@@ -75,7 +71,6 @@ def _hue_rotate(img: Image.Image, degrees: float) -> Image.Image:
     h = np.where(maxc == b, 4.0 + gc - rc, h)
     h = (h / 6.0) % 1.0
     h = (h + degrees / 360.0) % 1.0
-    # HSV → RGB
     i = np.floor(h * 6.0).astype(np.int32)
     f = h * 6.0 - i
     p = v * (1.0 - s)
@@ -115,7 +110,7 @@ def _hue_rotate(img: Image.Image, degrees: float) -> Image.Image:
 
 
 def apply_css_filter(img: Image.Image, css: str) -> Image.Image:
-    """Apply a (possibly compound) CSS filter string to `img`. Always returns RGBA."""
+    """Apply a CSS filter string to ``img`` and return RGBA."""
     if not css or css.strip() == "none":
         return img if img.mode == "RGBA" else img.convert("RGBA")
     out = img if img.mode == "RGBA" else img.convert("RGBA")
@@ -145,5 +140,4 @@ def apply_css_filter(img: Image.Image, css: str) -> Image.Image:
             radius = float(arg.replace("px", "")) if arg else 0.0
             if radius > 0:
                 out = out.filter(ImageFilter.GaussianBlur(radius=radius))
-        # unrecognised filters are silently skipped
     return out

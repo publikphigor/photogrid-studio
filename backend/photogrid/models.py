@@ -15,7 +15,7 @@ FormatId = Literal["png", "jpg", "webp", "svg"]
 
 
 class CellImage(BaseModel):
-    hash: str = Field(min_length=64, max_length=64)  # sha256 hex
+    hash: str = Field(min_length=64, max_length=64)
     name: str = ""
     w: int = 0
     h: int = 0
@@ -35,12 +35,10 @@ class Cell(BaseModel):
     scale: float = 1.0
     rotation: float = 0
     filter: str = "none"
-    shape: ShapeId = "rect"  # per-cell shape
-    cellRadius: float = 0  # design-px corner radius (multiplied by output.scale on render)
-    cellBorder: float = 0  # px
+    shape: ShapeId = "rect"
+    cellRadius: float = 0
+    cellBorder: float = 0
     cellBorderColor: str = "#ffffff"
-    # Per-cell pixel offsets layered on top of the grid-computed box; used by
-    # the edge-resize handles (see frontend `EDGE_RESIZE`). Design-pixel space.
     dx: float = 0
     dy: float = 0
     dw: float = 0
@@ -54,8 +52,6 @@ class Watermark(BaseModel):
     font: str = "Helvetica, Arial, sans-serif"
     weight: int = 600
     image: CellImage | None = None
-    # x / y are normalized fractions of the container; sizePx is in design
-    # pixels (multiplied by output.scale at render time).
     x: float = 0.5
     y: float = 0.95
     sizePx: float = 64.0
@@ -66,14 +62,12 @@ class Watermark(BaseModel):
 
 class Container(BaseModel):
     shape: ShapeId = "rect"
-    cornerRadius: float = 12  # design-px corner radius (multiplied by output.scale on render)
+    cornerRadius: float = 12
     aspect: str = "1:1"
     bg: str = "#ffffff"
     bgTransparent: bool = False
     bgImage: CellImage | None = None
     bgImageFit: FitMode = "cover"
-    # Optional bg-image blur (design pixels) and a flat-color overlay between
-    # bg and cells. Both default to no-op so legacy state stays unchanged.
     bgBlur: float = 0
     bgOverlayColor: str = "#000000"
     bgOverlayOpacity: float = 0

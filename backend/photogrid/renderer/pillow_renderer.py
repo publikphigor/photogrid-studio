@@ -18,7 +18,7 @@ from .layout import cell_box, dimensions_for, grid_tracks
 from .overlays import composite_text_layer, composite_watermark
 from .shapes import make_cell_mask, make_container_mask, stroke_cell, stroke_container
 
-try:  # HEIC support
+try:
     from pillow_heif import register_heif_opener  # type: ignore[import-untyped]
 
     register_heif_opener()
@@ -52,10 +52,7 @@ def _open_source(cell: Cell) -> Image.Image | None:
         raise FileNotFoundError(cell.image.hash)
     img = Image.open(cached)
     img.load()
-    # Honour EXIF orientation so the rendered pixels match what the browser's
-    # createImageBitmap previewed on the canvas. Without this, iPhone JPEGs with
-    # orientation tags 3/6/8 paint sideways/upside-down on export under
-    # cover/contain/fill fits.
+    # EXIF transpose required so rendered pixels match the browser's createImageBitmap preview.
     img = ImageOps.exif_transpose(img)
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGBA")
@@ -71,7 +68,6 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
     W = max(1, dims.w * scale)
     H = max(1, dims.h * scale)
 
-    # Pixel-budget guard; render canvas sits inside this allowance.
     if W * H > settings.max_pixels:
         raise ValueError(
             f"output {W}x{H}={W * H} exceeds MAX_PIXELS_MP={settings.max_pixels_mp}",
@@ -80,13 +76,9 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
     log.info("render.start", w=W, h=H, format=out.format, scale=scale, cells=len(state.cells))
 
     text_layers = state.textLayers or []
-    # `base` accumulates everything that should be clipped by the container
-    # shape: bg, cells, behind/in-front-of-cells text, watermark. After the
-    # container clip is applied, we composite the unclipped bands (behind /
-    # in-front-of-container) so they extend beyond the silhouette.
+    # ``base`` collects everything that the container shape clips; unclipped bands are composited afterwards.
     base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
-    # Container background (clipped later by container mask).
     if not cont.bgTransparent:
         bg_layer = Image.new("RGBA", (W, H), _hex_to_rgba(cont.bg))
         base.alpha_composite(bg_layer)
@@ -109,8 +101,6 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             except Exception as e:
                 log.warning("bgimage.failed", error=str(e))
 
-    # Optional flat-color overlay between bg and cells. Applied after bg color
-    # / bg image so it tints them, but before cells so cell pixels stay sharp.
     if cont.bgOverlayOpacity and cont.bgOverlayOpacity > 0:
         overlay = Image.new(
             "RGBA",
@@ -119,13 +109,10 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
         )
         base.alpha_composite(overlay)
 
-    # Behind-cells text layers paint inside the container clip but underneath
-    # the cells themselves.
     for layer in text_layers:
         if layer.z == "behind-cells":
             composite_text_layer(base, layer, scale)
 
-    # Layout in scaled-pixel space.
     tracks = grid_tracks(
         W, H,
         padding=cont.padding * scale,
@@ -153,10 +140,6 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
         )
         cw_i = max(1, int(round(box[2])))
         ch_i = max(1, int(round(box[3])))
-        # Cell shape mask: prefer the per-cell shape; fall back to rounded-rect
-        # when shape is 'rect' but a corner radius is set. ``cell.cellRadius``
-        # is in design pixels — multiply by the output scale so the rendered
-        # corner radius equals what the on-screen preview shows.
         cell_radius_out = cell.cellRadius * scale
         if cell.shape and cell.shape != "rect":
             cell_mask = make_container_mask(cell.shape, cw_i, ch_i, cell_radius_out)
@@ -182,20 +165,15 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
                 color=cell.cellBorderColor,
             )
 
-    # Layers painted on top of the cells but still INSIDE the container clip:
-    # `in-front-of-cells` text + the watermark.
     for layer in text_layers:
         if layer.z == "in-front-of-cells":
             composite_text_layer(base, layer, scale)
     composite_watermark(base, cont.watermark, scale)
 
-    # Apply container shape mask globally. ``cont.cornerRadius`` is design px;
-    # the mask is built in output px so we scale up.
     container_radius_out = cont.cornerRadius * scale
     container_mask = make_container_mask(cont.shape, W, H, container_radius_out)
     base = _apply_alpha(base, container_mask)
 
-    # Container border (drawn inset, inside the clip region).
     if cont.borderWidth > 0:
         stroke_container(
             base, cont.shape, W, H,
@@ -204,9 +182,7 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
             color=cont.borderColor,
         )
 
-    # Outside-the-clip layers. Paint behind-container under everything we've
-    # built so far, then in-front-of-container on top of the lot. These extend
-    # past the container silhouette.
+    # Bands that extend past the container silhouette.
     has_unclipped = any(
         layer.z in ("behind-container", "in-front-of-container") for layer in text_layers
     )
@@ -225,13 +201,13 @@ def _render_sync(state: PhotoGridState) -> tuple[bytes, str]:
 
 
 def _fit_image(img: Image.Image, w: int, h: int, fit: str) -> Image.Image:
-    """Resize `img` to fill (w, h) using object-fit semantics; returns RGBA at (w, h)."""
+    """Resize ``img`` to ``(w, h)`` using object-fit semantics; returns RGBA at ``(w, h)``."""
     iw, ih = img.size
     if fit == "fill":
         return img.resize((w, h), Image.Resampling.LANCZOS)
     if fit == "contain":
         s = min(w / iw, h / ih)
-    else:  # cover
+    else:
         s = max(w / iw, h / ih)
     dw = max(1, int(round(iw * s)))
     dh = max(1, int(round(ih * s)))
@@ -244,7 +220,7 @@ def _fit_image(img: Image.Image, w: int, h: int, fit: str) -> Image.Image:
 def _empty_cell_tile(w: int, h: int, mask: Image.Image) -> Image.Image:
     from PIL import ImageDraw
 
-    tile = Image.new("RGBA", (w, h), (26, 26, 28, 255))  # cell-bg dark token
+    tile = Image.new("RGBA", (w, h), (26, 26, 28, 255))
     draw = ImageDraw.Draw(tile)
     stripe = (29, 29, 32, 255)
     step = 16
@@ -253,7 +229,6 @@ def _empty_cell_tile(w: int, h: int, mask: Image.Image) -> Image.Image:
             [(s, 0), (s + 8, 0), (s + 8 + h, h), (s + h, h)],
             fill=stripe,
         )
-    # Apply cell mask
     r, g, b, a = tile.split()
     import numpy as np
 
@@ -274,8 +249,7 @@ def _apply_alpha(base: Image.Image, mask: Image.Image) -> Image.Image:
 
 
 def _hex_to_rgba(hex_str: str, alpha: float | None = None) -> tuple[int, int, int, int]:
-    """Parse `#RGB`, `#RRGGBB`, or `#RRGGBBAA`. When `alpha` is supplied
-    (0..1), it overrides any alpha channel parsed from the hex string."""
+    """Parse ``#RGB``/``#RRGGBB``/``#RRGGBBAA``; supplied ``alpha`` (0..1) overrides any hex alpha."""
     s = hex_str.lstrip("#")
     if len(s) == 3:
         s = "".join(ch * 2 for ch in s)
@@ -300,7 +274,7 @@ def _encode(img: Image.Image, fmt: str, quality: float) -> tuple[bytes, str]:
     if fmt == "png":
         img.save(buf, format="PNG", optimize=True)
     elif fmt == "jpg":
-        # JPEG has no alpha; flatten on white if transparent.
+        # JPEG has no alpha; flatten on white.
         if img.mode == "RGBA":
             background = Image.new("RGB", img.size, (255, 255, 255))
             background.paste(img, mask=img.split()[-1])
@@ -309,10 +283,7 @@ def _encode(img: Image.Image, fmt: str, quality: float) -> tuple[bytes, str]:
     elif fmt == "webp":
         img.save(buf, format="WEBP", quality=int(round(quality * 100)), method=6)
     elif fmt == "svg":
-        # SVG carrying the rendered pixel canvas as a single embedded PNG.
-        # The whole composite (cell shapes, container mask, borders) is already
-        # baked into the alpha channel, so the SVG is a faithful single-image
-        # wrapper that opens in any vector tool but isn't true vector geometry.
+        # SVG wrapper around the rendered PNG; not true vector geometry.
         import base64
         png_buf = io.BytesIO()
         img.save(png_buf, format="PNG", optimize=True)
@@ -336,5 +307,4 @@ def _encode(img: Image.Image, fmt: str, quality: float) -> tuple[bytes, str]:
 __all__ = ["PillowRenderer"]
 
 
-# Convenience: keep referenced symbol so static linter is happy
 _ = Path

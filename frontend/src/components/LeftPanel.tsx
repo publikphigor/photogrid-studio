@@ -11,9 +11,6 @@ import { PresetMini } from './PresetMini';
 interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
-  /** True while any upload is in flight; layer-add buttons are disabled so a
-   *  user can't fire a structural change mid-upload that would orphan an
-   *  in-flight image. */
   uploading?: boolean;
 }
 
@@ -37,10 +34,6 @@ export function LeftPanel({ state, dispatch, uploading = false }: Props) {
     setSaved(Templates.list());
   }, []);
 
-  // Keep the shuffle count in lockstep with the live cell count: as cells are
-  // added or removed elsewhere, the input reflects the new total so the next
-  // shuffle preserves the same density by default. The user can still type a
-  // custom value — it will get overwritten the next time cells.length changes.
   useEffect(() => {
     setRandRaw(String(Math.max(1, state.cells.length)));
   }, [state.cells.length]);
@@ -55,9 +48,6 @@ export function LeftPanel({ state, dispatch, uploading = false }: Props) {
   };
 
   const onApplyTemplate = async (tpl: SavedTemplate) => {
-    // Apply the snapshot first so the layout shows immediately, then resolve
-    // preview URLs from the backend cache and patch them in. Missing images
-    // leave their cell empty rather than wedging the load.
     dispatch({ type: 'REPLACE', state: tpl.state });
     const tasks: Promise<void>[] = [];
     for (const c of tpl.state.cells) {
@@ -364,8 +354,6 @@ function SaveTemplateModal({
   const [name, setName] = useState(defaultName);
   const [includeImages, setIncludeImages] = useState(false);
 
-  // Reset form fields each time the modal opens so a stale name from a prior
-  // session doesn't leak into the next save.
   useEffect(() => {
     if (open) {
       setName(defaultName);
@@ -445,11 +433,6 @@ interface TemplateRowProps {
   onRename: (name: string) => void;
 }
 
-/** A single row in the My Templates list. Single-click applies the template;
- *  double-click on the name swaps the label for an inline input — Enter
- *  commits the rename, Escape (or blur) cancels. The 200 ms suppression
- *  window blocks the second click of a double-click from re-applying the
- *  template the user is just trying to rename. */
 function TemplateRow({ template, onApply, onDelete, onRename }: TemplateRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(template.name);
@@ -472,8 +455,7 @@ function TemplateRow({ template, onApply, onDelete, onRename }: TemplateRowProps
       className="layer"
       onClick={() => {
         if (editing) return;
-        // Suppress the application click that lands right after a dbl-click
-        // (the second mouseup of the dbl-click also fires `click`).
+        // Block the click that fires right after a dbl-click on rename.
         if (Date.now() - suppressClickRef.current < 350) return;
         onApply();
       }}

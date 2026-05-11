@@ -9,10 +9,7 @@ interface Props {
   suffix?: string;
 }
 
-/** Slider + numeric input. The numeric field uses a buffered-edit pattern so
- *  the user can backspace to clear the field and type a fresh value without
- *  the controlled-input snapping back to the current state on every keystroke.
- *  The new value is committed on Enter or blur; Escape cancels. */
+// Buffered numeric edit so backspace-to-clear doesn't snap back; commit on Enter/blur.
 export function Slider({ value, min = 0, max = 100, step = 1, onChange, suffix = '' }: Props) {
   const [editing, setEditing] = useState(false);
   const [raw, setRaw] = useState('');
@@ -63,8 +60,6 @@ export function Slider({ value, min = 0, max = 100, step = 1, onChange, suffix =
 }
 
 function formatValue(v: number): string {
-  // Avoid showing trailing decimals for integer-step sliders, but keep them
-  // for fractional steps (e.g. zoom 0.05).
   if (Number.isInteger(v)) return String(v);
   return Number.isFinite(v) ? String(Math.round(v * 100) / 100) : '0';
 }

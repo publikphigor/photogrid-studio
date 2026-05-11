@@ -1,7 +1,4 @@
-"""Content-addressed disk cache for uploaded source images.
-
-Layout: ``{root}/{hash[:2]}/{hash}.{ext}``. Atomic writes via tmp + rename.
-"""
+"""Content-addressed disk cache at ``{root}/{hash[:2]}/{hash}.{ext}`` with atomic tmp+rename writes."""
 
 from __future__ import annotations
 
@@ -61,7 +58,6 @@ class DiskCache:
 
     def store_stream(self, src: IO[bytes], mime: str, max_bytes: int) -> StoredFile:
         ext = EXT_BY_MIME.get(mime, "bin")
-        # Stream to a tmp file while hashing + counting bytes.
         tmp_dir = self.root / "_tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tmp = tmp_dir / f"upload-{os.getpid()}-{time.time_ns()}.tmp"
@@ -112,7 +108,7 @@ def cache_stats(root: Path | None = None) -> dict[str, float | int]:
 
 
 def sweep_cache(root: Path | None = None, ttl_hours: float | None = None) -> int:
-    """Delete files whose mtime is older than `ttl_hours`. Returns # removed."""
+    """Delete cache files older than ``ttl_hours``; returns the count removed."""
     root = root or settings.cache_dir
     ttl = (ttl_hours if ttl_hours is not None else settings.cache_ttl_hours) * 3600.0
     if ttl <= 0 or not root.is_dir():

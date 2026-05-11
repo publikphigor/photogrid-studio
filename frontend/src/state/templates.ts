@@ -6,14 +6,10 @@ export interface SavedTemplate {
   id: string;
   name: string;
   createdAt: number;
-  /** Snapshot of state minus per-instance things (selection, zoom). */
   state: PhotoGridState;
 }
 
 export interface SaveOptions {
-  /** Keep cell images (and the container's bgImage) in the saved snapshot.
-   *  When false (the default) every cell reloads empty — useful for keeping a
-   *  layout reusable across photo sets without bloating localStorage. */
   includeImages?: boolean;
 }
 
@@ -36,11 +32,7 @@ function write(list: SavedTemplate[]): void {
   }
 }
 
-/** Strip transient fields and large preview blobs that shouldn't go into localStorage.
- *  When `includeImages` is false (the default) cell images are also removed so the
- *  template is purely a layout/style snapshot that can host any new photo set. */
 function clean(state: PhotoGridState, includeImages: boolean): PhotoGridState {
-  // Watermark image follows the same image-or-not policy as cells/bg.
   const watermark = state.container.watermark
     ? {
         ...state.container.watermark,
@@ -70,8 +62,6 @@ function clean(state: PhotoGridState, includeImages: boolean): PhotoGridState {
       if (!includeImages) {
         return { ...c, image: null, offsetX: 0, offsetY: 0, scale: 1, rotation: 0 };
       }
-      // Keep the hash + dimensions so a reload can re-resolve from backend cache,
-      // but drop the local previewUrl (object URL — won't survive reload anyway).
       return { ...c, image: { ...c.image, previewUrl: undefined } };
     }),
   };
@@ -88,7 +78,7 @@ export const Templates = {
       state: clean(state, opts.includeImages === true),
     };
     all.unshift(tpl);
-    write(all.slice(0, 50)); // hard cap
+    write(all.slice(0, 50));
     return tpl;
   },
   rename(id: string, name: string): void {

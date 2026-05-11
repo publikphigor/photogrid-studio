@@ -1,7 +1,4 @@
-"""Geometry shared with the frontend. Mirror of ``frontend/src/state/presets.ts``.
-
-Keep these constants in sync with the prototype's ``shapes.jsx``.
-"""
+"""Geometry shared with the frontend; mirror of ``frontend/src/state/presets.ts``."""
 
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ class Size:
 
 
 def dimensions_for(aspect: str, base_size: int) -> Size:
-    """Mirror of ``dimensionsFor`` from state.jsx — `base_size` is the longest side."""
+    """Return canvas size for ``aspect`` with ``base_size`` as the longest side."""
     rw, rh = ASPECT_RATIOS.get(aspect, (1, 1))
     if rw >= rh:
         return Size(base_size, round(base_size * rh / rw))
@@ -36,8 +33,6 @@ def dimensions_for(aspect: str, base_size: int) -> Size:
 class GridTracks:
     inner_w: float
     inner_h: float
-    # Per-track pixel widths/heights (length cols/rows). Uniform when the
-    # frontend hasn't redistributed track weights via resize handles.
     col_widths: tuple[float, ...] = field(default_factory=tuple)
     row_heights: tuple[float, ...] = field(default_factory=tuple)
 
@@ -82,9 +77,7 @@ def cell_box(
     dw: float = 0,
     dh: float = 0,
 ) -> tuple[float, float, float, float]:
-    """Compute the cell's pixel rect. `dx/dy/dw/dh` are per-cell pixel offsets
-    set by the edge-resize handles (see frontend `Cell.dx/dy/dw/dh`). They must
-    already be in the same pixel space as the col/row widths."""
+    """Compute a cell's pixel rect; ``dx/dy/dw/dh`` must already be in the same pixel space as the track widths."""
     cx = padding + sum(col_widths[: col_start - 1]) + (col_start - 1) * gap + dx
     cy = padding + sum(row_heights[: row_start - 1]) + (row_start - 1) * gap + dy
     cw = sum(col_widths[col_start - 1 : col_start - 1 + col_span]) + gap * (col_span - 1) + dw

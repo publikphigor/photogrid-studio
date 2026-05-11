@@ -15,10 +15,7 @@ const EPHEMERAL: ReadonlySet<Action['type']> = new Set([
   'REDO',
 ]);
 
-/** Actions that fire continuously during a drag. The first one in a burst
- *  pushes a history entry; subsequent ones of the same type within
- *  COALESCE_WINDOW_MS just mutate state without adding new undo steps, so a
- *  long resize drag collapses into a single undo. */
+// Drag-streaks within COALESCE_WINDOW_MS collapse into one undo step.
 const COALESCING: ReadonlySet<Action['type']> = new Set([
   'EDGE_RESIZE',
   'RESIZE_TRACKS',
@@ -32,9 +29,6 @@ export function useHistoryReducer(
   const [state, dispatch] = useReducer(reducer, initial);
   const stack = useRef<{ past: PhotoGridState[]; future: PhotoGridState[] }>({ past: [], future: [] });
   const last = useRef(state);
-  // Drag coalescer: matches a streak of consecutive same-type actions to a
-  // single past-stack entry. Reset whenever the streak's window lapses or a
-  // different action type arrives.
   const coalesce = useRef<{ type: Action['type'] | null; at: number }>({ type: null, at: 0 });
 
   useEffect(() => {

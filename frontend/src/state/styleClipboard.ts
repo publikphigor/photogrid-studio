@@ -1,8 +1,6 @@
 import type { Cell, CellFilters } from '@/types';
 
-/** Subset of `Cell` that the copy-style action captures. Image and grid
- *  position are intentionally excluded — the user copies look-and-feel, not
- *  content or layout. */
+// Look-and-feel only; image and grid position deliberately excluded.
 export interface CellStyle {
   fit: Cell['fit'];
   scale: number;
@@ -15,11 +13,7 @@ export interface CellStyle {
   cellBorderColor: string;
 }
 
-/** Module-scoped clipboard. Lives only for the current page session — paste
- *  is disabled across reloads on purpose, so a stale style from a prior
- *  session never sneaks into a new template. Subscribers re-render when the
- *  buffer changes (set/clear) so the context menu can show "Paste style"
- *  only when there's something to paste. */
+// Session-only; never persisted so a stale style can't leak into a new template.
 let buffer: CellStyle | null = null;
 const subscribers = new Set<() => void>();
 

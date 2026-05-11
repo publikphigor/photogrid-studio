@@ -3,7 +3,6 @@ import type { ShapeId } from '@/types';
 
 export interface ShapeDef {
   name: string;
-  /** SVG path/element used in the shape picker thumbnails. */
   iconPath: string;
 }
 
@@ -26,18 +25,8 @@ export const SHAPES: Record<ShapeId, ShapeDef> = {
   chevron:       { name: 'Chevron',       iconPath: 'M3 5h13l5 7-5 7H3l5-7z' },
 };
 
-/**
- * CSS for a per-cell shape. We can't always rely on `clip-path` on grid items
- * (it interacts oddly with the cell's overflow:hidden + box-shadow border), so
- * shapes that are pure border-radius use that and the rest fall back to
- * mask-image for crisp edges.
- *
- * `radiusPx` is an absolute pixel radius in design space (matches the value
- * the user typed in the inspector). The backend is fed the same number so the
- * exported corners line up exactly with the on-screen preview.
- */
+// clip-path doesn't play nicely with cell overflow + box-shadow border, so radius-based shapes use border-radius and others fall back to mask-image.
 export function cellShapeCSS(shape: ShapeId, radiusPx: number): CSSProperties {
-  // For 'rounded' the radius slider drives it; for other shapes radius is ignored.
   return shapeCSS(shape, 0, 0, radiusPx);
 }
 
