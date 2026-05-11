@@ -14,7 +14,7 @@ def init_posthog(api_key: str | None, host: str) -> None:
     if not api_key:
         return
     posthog_client = Posthog(
-        api_key=api_key,
+        project_api_key=api_key,
         host=host,
         enable_exception_autocapture=True,
     )

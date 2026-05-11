@@ -1,11 +1,14 @@
 services:
   backend:
-    command: ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "${WEB_CONCURRENCY:-4}", "-b", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "photogrid.main:app"]
+    # --timeout 600: a single render can take minutes for large outputs (Pillow
+    # is CPU-bound, gunicorn's 30s default kills the worker mid-render → the
+    # client sees a connection reset and the UI reports "Export failed").
+    command: ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "${WEB_CONCURRENCY:-4}", "--timeout", "600", "-b", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "photogrid.main:app"]
     deploy:
       resources:
         limits:
-          memory: 2g
-          cpus: "2.0"
+          memory: 6g
+          cpus: "4.0"
     logging:
       driver: json-file
       options:
