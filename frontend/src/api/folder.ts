@@ -99,22 +99,12 @@ export async function clearFolder(): Promise<void> {
   await del(KEY);
 }
 
+// Never calls requestPermission — that needs a fresh user activation, and Chrome
+// sometimes hangs the promise instead of throwing when activation is gone.
 export async function ensureWritable(handle: DirHandleLike): Promise<boolean> {
-  const opts = { mode: 'readwrite' as const };
-  if (handle.queryPermission) {
-    const cur = await handle.queryPermission(opts);
-    if (cur === 'granted') return true;
-  }
-  if (handle.requestPermission) {
-    try {
-      const next = await handle.requestPermission(opts);
-      return next === 'granted';
-    } catch {
-      // SecurityError when activation has expired (after a long await). Treat as denied.
-      return false;
-    }
-  }
-  return false;
+  if (!handle.queryPermission) return false;
+  const cur = await handle.queryPermission({ mode: 'readwrite' });
+  return cur === 'granted';
 }
 
 export async function writeBlobToFolder(

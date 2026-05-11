@@ -97,7 +97,7 @@ export function App() {
           throw new Error(`Could not re-upload: ${stillMissing.join(', ')}`);
         }
       });
-      const savedAs = await saveBlob(res.blob, res.filename, state.output.format, flashToast);
+      const savedAs = await saveBlob(res.blob, res.filename, flashToast);
       setExportInfo({
         lastSize: res.size,
         rendererName: res.rendererName,
@@ -402,60 +402,23 @@ function DesktopOnlyGate() {
   );
 }
 
-const FORMAT_MIMES: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-};
-
 async function saveBlob(
   blob: Blob,
   filename: string,
-  format: string,
   notify: (msg: string) => void,
 ): Promise<string | undefined> {
+  // Skip the save picker after the long render — it needs fresh activation and hangs otherwise.
   const folder = await getStoredFolder();
   if (folder) {
     try {
       const granted = await ensureWritable(folder);
       if (granted) return await writeBlobToFolder(folder, filename, blob);
-      notify('Folder permission denied; downloading instead');
+      notify('Folder permission lapsed; downloading instead');
     } catch (e) {
       console.warn('folder write failed, downloading instead', e);
       notify('Folder write failed; downloading instead');
     }
-    // Folder save failed — skip the picker (also needs activation) and download directly.
-    downloadBlobViaLink(blob, filename);
-    return;
   }
-
-  const fsa = (window as unknown as {
-    showSaveFilePicker?: (options: {
-      suggestedName: string;
-      types: { description: string; accept: Record<string, string[]> }[];
-    }) => Promise<FileSystemFileHandle>;
-  }).showSaveFilePicker;
-  const mime = FORMAT_MIMES[format] ?? 'application/octet-stream';
-  if (typeof fsa === 'function') {
-    try {
-      const handle = await fsa({
-        suggestedName: filename,
-        types: [{ description: format.toUpperCase(), accept: { [mime]: [`.${format}`] } }],
-      });
-      const writable = await (handle as unknown as { createWritable: () => Promise<{
-        write: (b: Blob) => Promise<void>;
-        close: () => Promise<void>;
-      }> }).createWritable();
-      await writable.write(blob);
-      await writable.close();
-      return;
-    } catch (e) {
-      if ((e as { name?: string })?.name === 'AbortError') return;
-      console.warn('save picker failed, falling back to download', e);
-    }
-  }
-
   downloadBlobViaLink(blob, filename);
 }
 
