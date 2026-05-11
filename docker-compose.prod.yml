@@ -1,7 +1,9 @@
 services:
   backend:
     # --timeout 600: gunicorn's 30s default SIGKILLs workers mid-render on big exports.
-    command: ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "${WEB_CONCURRENCY:-4}", "--timeout", "600", "-b", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "photogrid.main:app"]
+    # --graceful-timeout 600 + stop_grace_period: in-flight renders finish during a deploy.
+    command: ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "${WEB_CONCURRENCY:-4}", "--timeout", "600", "--graceful-timeout", "600", "-b", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "photogrid.main:app"]
+    stop_grace_period: 600s
     deploy:
       resources:
         limits:
