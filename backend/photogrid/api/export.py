@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 import time
 
@@ -14,6 +16,22 @@ from ..renderer import select_renderer
 
 router = APIRouter()
 
+# Bound concurrent renders so a burst doesn't pin every CPU core; override via MAX_CONCURRENT_RENDERS.
+_render_sem = asyncio.Semaphore(int(os.environ.get("MAX_CONCURRENT_RENDERS", "3")))
+
+
+def _probe_pixels(path) -> int | None:
+    """Return pixel area of a cached image, or None when corrupt (entry is unlinked)."""
+    try:
+        with Image.open(path) as img:
+            return img.size[0] * img.size[1]
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
 
 @router.post("/export", response_class=Response)
 async def export(req: ExportRequest, request: Request) -> Response:
@@ -22,9 +40,6 @@ async def export(req: ExportRequest, request: Request) -> Response:
     cell_count = len(state.cells)
     cells_with_images = sum(1 for c in state.cells if c.image is not None)
 
-    # Pre-flight: every referenced hash must be cached. Cells, the container
-    # bg image, and the watermark image (if any) are all checked here so the
-    # 409 response surfaces every gap at once.
     missing: list[str] = []
     source_pixels_max = 0
     image_refs = []
@@ -41,20 +56,19 @@ async def export(req: ExportRequest, request: Request) -> Response:
     ):
         image_refs.append(state.container.watermark.image)
 
-    for ref in image_refs:
+    async def _probe(ref):
         path = find_cached(ref.hash)
         if path is None:
-            missing.append(ref.hash)
-            continue
-        try:
-            with Image.open(path) as img:
-                source_pixels_max = max(source_pixels_max, img.size[0] * img.size[1])
-        except Exception:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            missing.append(ref.hash)
+            return ref.hash, None
+        pixels = await asyncio.to_thread(_probe_pixels, path)
+        return ref.hash, pixels
+
+    if image_refs:
+        for hash_, pixels in await asyncio.gather(*[_probe(r) for r in image_refs]):
+            if pixels is None:
+                missing.append(hash_)
+            else:
+                source_pixels_max = max(source_pixels_max, pixels)
 
     if missing:
         capture(
@@ -75,11 +89,12 @@ async def export(req: ExportRequest, request: Request) -> Response:
     renderer = select_renderer(state, source_pixels_max)
     started = time.perf_counter()
     try:
-        data, mime = await renderer.render(state)
+        async with _render_sem:
+            data, mime = await renderer.render(state)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except FileNotFoundError as e:
-        # Race: a cache entry vanished between pre-flight and render.
+        # Cache entry vanished between pre-flight and render.
         return Response(
             content=MissingHashes(missing=[str(e)]).model_dump_json(),
             media_type="application/json",
@@ -116,8 +131,7 @@ async def export(req: ExportRequest, request: Request) -> Response:
         },
     )
 
-    # Mirror the FE filename builder (client.ts). Chrome falls back to Content-Disposition
-    # when a.download is ignored (e.g., long-render activation gap), so both must agree.
+    # Must mirror FE client.ts filename builder; Chrome falls back to Content-Disposition when a.download is ignored.
     base = re.sub(r'[/\\:*?"<>|]', "", state.output.filename or "photogrid").strip() or "photogrid"
     filename = f"{base}.{state.output.format}"
     return Response(

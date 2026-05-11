@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import mimetypes
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -24,7 +26,6 @@ _ALLOWED_MIMES = {
     "image/avif",
 }
 
-# Pillow MAX_IMAGE_PIXELS guard — explicit ceiling instead of None.
 Image.MAX_IMAGE_PIXELS = settings.max_pixels
 
 
@@ -35,6 +36,12 @@ def _detect_mime(head: bytes) -> str | None:
         return magic.from_buffer(head, mime=True)
     except Exception:
         return None
+
+
+def _probe_dimensions(path: Path) -> tuple[int, int]:
+    with Image.open(path) as img:
+        img = ImageOps.exif_transpose(img)
+        return img.size
 
 
 @router.post("/images", response_model=UploadResponse, status_code=200)
@@ -51,7 +58,6 @@ async def upload_image(file: UploadFile, request: Request) -> UploadResponse:
         capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "unsupported_mime", "mime_type": mime})
         raise HTTPException(status_code=415, detail=f"unsupported mime: {mime!r}")
 
-    # Reassemble: head + remaining stream
     class _Stream:
         def __init__(self, head: bytes, rest) -> None:  # type: ignore[no-untyped-def]
             self._buf = io.BytesIO(head)
@@ -64,8 +70,11 @@ async def upload_image(file: UploadFile, request: Request) -> UploadResponse:
             return self._rest.read(n)
 
     cache = DiskCache()
+    # Offload sync disk write so a slow WAN upload doesn't head-of-line block the gunicorn worker.
     try:
-        stored = cache.store_stream(_Stream(head, file.file), mime, settings.max_upload_bytes)
+        stored = await asyncio.to_thread(
+            cache.store_stream, _Stream(head, file.file), mime, settings.max_upload_bytes
+        )
     except ValueError as e:
         capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "file_too_large"})
         raise HTTPException(status_code=413, detail=str(e)) from e
@@ -74,17 +83,10 @@ async def upload_image(file: UploadFile, request: Request) -> UploadResponse:
         capture("image upload failed", distinct_id=distinct_id, properties={"failure_reason": "server_error"})
         raise HTTPException(status_code=500, detail="upload failed") from e
 
-    # Probe dimensions (Pillow handles HEIC via pillow-heif registered in renderer).
-    # Apply EXIF transpose so reported (w, h) match the orientation the browser's
-    # createImageBitmap will use for the preview AND what the renderer composites
-    # at export time. Without this, iPhone JPEGs that should be portrait would
-    # report landscape dimensions and the frontend's IMG box would mis-size.
+    # EXIF transpose required so reported (w,h) match createImageBitmap and the renderer (iPhone JPEGs orient 3/6/8).
     try:
-        with Image.open(stored.path) as img:
-            img = ImageOps.exif_transpose(img)
-            w, h = img.size
+        w, h = await asyncio.to_thread(_probe_dimensions, stored.path)
     except Exception as e:
-        # Don't poison the cache with broken files.
         try:
             stored.path.unlink(missing_ok=True)
         except Exception:
@@ -114,7 +116,7 @@ def get_image(hash: str) -> FileResponse:
     if path is None:
         raise HTTPException(status_code=404, detail="not cached")
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    # Cacheable forever — content is hash-addressed.
+    # Hash-addressed: cacheable forever.
     return FileResponse(
         path,
         media_type=mime,
