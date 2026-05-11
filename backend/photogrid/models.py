@@ -119,6 +119,7 @@ class Output(BaseModel):
     quality: float = Field(default=0.92, ge=0.1, le=1.0)
     scale: int = Field(default=2, ge=1, le=4)
     baseSize: int = Field(default=1200, ge=200, le=8000)
+    filename: str | None = None
 
 
 class PhotoGridState(BaseModel):
