@@ -106,8 +106,16 @@ export async function ensureWritable(handle: DirHandleLike): Promise<boolean> {
     if (cur === 'granted') return true;
   }
   if (handle.requestPermission) {
-    const next = await handle.requestPermission(opts);
-    return next === 'granted';
+    try {
+      const next = await handle.requestPermission(opts);
+      return next === 'granted';
+    } catch {
+      // requestPermission requires a fresh user activation. After a long
+      // await (e.g., a 30-60s export render) the activation is gone and
+      // the call throws SecurityError. Treat that as "not granted" so
+      // the caller can fall back to the picker or <a download>.
+      return false;
+    }
   }
   return false;
 }

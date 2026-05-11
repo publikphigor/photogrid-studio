@@ -72,6 +72,14 @@ export function App() {
   }, [viewport]);
 
   const handleExport = useCallback(async () => {
+    // Pre-grant the saved-folder permission while the click's user activation
+    // is still fresh. If we wait until after the render (30-60s), Chrome
+    // rejects requestPermission with SecurityError and the export aborts.
+    // queryPermission/requestPermission are still allowed at this point;
+    // once granted, the handle stays granted for the rest of the session.
+    const preGrantFolder = await getStoredFolder();
+    if (preGrantFolder) await ensureWritable(preGrantFolder);
+
     setExporting(true);
     const cellsWithImages = state.cells.filter((c) => c.image).length;
     capture('export started', {
