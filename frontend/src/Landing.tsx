@@ -16,6 +16,7 @@ import {
 
 const REPO_URL = "https://github.com/publikphigor/photogrid-studio";
 const DEV_URL = "https://github.com/publikphigor";
+const GIT_SHA = import.meta.env.VITE_GIT_SHA ?? "dev";
 
 export function Landing() {
   useEffect(() => {
@@ -384,6 +385,15 @@ function Footer() {
           <span className="text-text-4">· MIT licensed</span>
         </div>
         <nav className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <a
+            href={`${REPO_URL}/commit/${GIT_SHA}`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 font-mono transition hover:text-text"
+            title="Open this build's commit on GitHub"
+          >
+            build {GIT_SHA}
+          </a>
           <a
             href={REPO_URL}
             target="_blank"
