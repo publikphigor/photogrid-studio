@@ -425,9 +425,7 @@ async function saveBlob(
       console.warn('folder write failed, downloading instead', e);
       notify('Folder write failed; downloading instead');
     }
-    // Folder save couldn't complete — go straight to the browser download
-    // rather than the picker, which also needs a fresh user activation
-    // and would just throw after the long render.
+    // Folder save failed — skip the picker (also needs activation) and download directly.
     downloadBlobViaLink(blob, filename);
     return;
   }

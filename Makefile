@@ -5,9 +5,7 @@ PROJECT := photogrid-studio
 COMPOSE := COMPOSE_FILE= docker compose -f docker-compose.yml
 COMPOSE_PROD := COMPOSE_FILE= docker compose -f docker-compose.yml -f docker-compose.prod.yml
 
-# Short commit SHA baked into the frontend bundle as VITE_GIT_SHA so the
-# landing footer can render a clickable build marker. Falls back to "dev"
-# when there's no git checkout (e.g. tarball install).
+# Baked into the frontend bundle so the landing footer can render a build link.
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export VITE_GIT_SHA := $(GIT_SHA)
 

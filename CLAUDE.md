@@ -223,6 +223,13 @@ the file persisting on the VPS, not on being recreated each deploy.
   shadow gets clipped to the silhouette and traces the shape outline,
   matching the backend's `stroke_container`.
 
+## Comments
+
+Default to writing no comments. When one is necessary (non-obvious why,
+hidden constraint, workaround for a specific bug), keep it to a single
+short line. Don't write multi-line comment blocks. Don't explain WHAT
+the code does — names already do that.
+
 ## Don't break these invariants
 
 - **Frontend & backend layout math must agree.** `dimensionsFor` /
