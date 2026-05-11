@@ -10,7 +10,6 @@ import type {
 } from '@/types';
 import { ASPECT_RATIOS, LAYOUT_PRESETS, dimensionsFor } from './presets';
 
-/** All-default filter values: every effect off / neutral. */
 export const DEFAULT_FILTERS: CellFilters = {
   grayscale: 0,
   sepia: 0,
@@ -22,8 +21,6 @@ export const DEFAULT_FILTERS: CellFilters = {
   blur: 0,
 };
 
-/** Build a CSS `filter:` string from structured filter params. Returns 'none'
- *  when every value is at default (so the renderer can skip the filter). */
 export function filtersToCss(f: CellFilters | undefined): string {
   if (!f) return 'none';
   const parts: string[] = [];
@@ -39,8 +36,7 @@ export function filtersToCss(f: CellFilters | undefined): string {
   return parts.length === 0 ? 'none' : parts.join(' ');
 }
 
-/** Inverse of filtersToCss for templates saved with the legacy CSS string.
- *  Best-effort — anything we can't parse falls back to defaults. */
+// Best-effort inverse of filtersToCss for legacy CSS-string templates.
 export function cssToFilters(css: string | undefined): CellFilters {
   const out = { ...DEFAULT_FILTERS };
   if (!css || css.trim() === 'none') return out;
@@ -78,8 +74,6 @@ export function cssToFilters(css: string | undefined): CellFilters {
   return out;
 }
 
-/** Read a cell's filter params, falling back to parsing the legacy CSS string
- *  for templates saved before structured filters existed. */
 export function getCellFilters(cell: Cell): CellFilters {
   if (cell.filters) return cell.filters;
   return cssToFilters(cell.filter);
@@ -103,11 +97,7 @@ export const DEFAULT_WATERMARK: Watermark = {
 let _id = 0;
 export const uid = (p = 'c'): string => `${p}_${(++_id).toString(36)}`;
 
-/** Human-scannable, session-unique export filename — e.g. PG_20260509_103128.
- *  Format is `PG_YYYYMMDD_HHMMSS` so the saved file is sortable by creation
- *  time without needing to look at filesystem metadata. Calling sites
- *  regenerate this on RESET / REPLACE / APPLY_PRESET so each new
- *  session/template starts with its own name. */
+// PG_YYYYMMDD_HHMMSS so saved files sort by creation time.
 export function generateFilename(): string {
   const d = new Date();
   const pad = (n: number): string => n.toString().padStart(2, '0');
@@ -174,8 +164,7 @@ export function defaultState(): PhotoGridState {
   };
 }
 
-/** Track-weight floor in fr-units. Below this, a track's pixel width gets so
- *  small the cell becomes unrecoverable, so we stop the drag here. */
+// Below this fr-weight a track gets too narrow to recover.
 export const MIN_TRACK_FR = 0.15;
 
 export function trackSizes(sizes: number[] | undefined, n: number): number[] {
@@ -183,8 +172,6 @@ export function trackSizes(sizes: number[] | undefined, n: number): number[] {
   return sizes;
 }
 
-/** Pixel width/height of a cell in design space, given its grid coords and
- *  current track weights. Returns zeros if any input is degenerate. */
 export function cellPixelSize(
   cell: Pick<Cell, 'colStart' | 'rowStart' | 'colSpan' | 'rowSpan'>,
   grid: GridConfig,
@@ -209,10 +196,6 @@ export function cellPixelSize(
   return { w, h };
 }
 
-/** Cell rectangle in design pixels, accounting for both the grid-computed box
- *  and any per-cell pixel offsets (`dx/dy/dw/dh`). The frontend renders cells
- *  using these coords with `position: absolute` so each cell can be shifted
- *  independently without affecting other rows or columns. */
 export function computeCellRect(
   cell: Cell,
   grid: GridConfig,
@@ -251,10 +234,6 @@ export function computeCellRect(
   };
 }
 
-/** Cells whose left/right/top/bottom edge sits exactly on `mover`'s opposite
- *  edge (in grid coords) AND whose perpendicular range is fully contained in
- *  `mover`'s. Used by edge resize handles to find the cells that must shift
- *  to keep the boundary tight. */
 export function edgeNeighbors(
   mover: Cell,
   cells: Cell[],
@@ -274,14 +253,11 @@ export function edgeNeighbors(
       if (c.rowStart !== mover.rowStart + mover.rowSpan) return false;
       return c.colStart >= mover.colStart && c.colStart + c.colSpan <= mover.colStart + mover.colSpan;
     }
-    // 'n'
     if (c.rowStart + c.rowSpan !== mover.rowStart) return false;
     return c.colStart >= mover.colStart && c.colStart + c.colSpan <= mover.colStart + mover.colSpan;
   });
 }
 
-/** Cover-fit scale that makes a freshly-uploaded image just fill the cell.
- *  User can then drag/scale freely from this baseline. */
 export function coverFitScale(cellW: number, cellH: number, imgW: number, imgH: number): number {
   if (!imgW || !imgH || !cellW || !cellH) return 1;
   return Math.max(cellW / imgW, cellH / imgH);
@@ -314,10 +290,7 @@ function findFreeSlot(
   return null;
 }
 
-/** Move overlapping cells out of the mover's path by relocating them to the
- *  next free slot. When `allowGrow` is false, returns null if any displaced
- *  cell can't be placed within the existing grid (caller treats this as a
- *  rejected move). Mover itself is not moved. */
+// Relocates overlaps to free slots; returns null when !allowGrow and nothing fits.
 function reflowAroundMover(
   cells: Cell[],
   grid: GridConfig,
@@ -351,16 +324,7 @@ function reflowAroundMover(
   return { cells: [...stable, mover, ...placed], grid: workGrid };
 }
 
-/** After a cell is removed, try to absorb the freed area so no whitespace
- *  is left. Strategy, in order:
- *    1. If a column or row band the cell occupied is now entirely empty, drop
- *       those tracks (and shift the remaining cells / colSizes / rowSizes).
- *    2. Otherwise, if a neighbor's row band exactly matches the removed cell's
- *       row band and they're horizontally adjacent, expand the neighbor across
- *       the freed columns. Same trick for vertical adjacency.
- *    3. Fall back to extending an adjacent cell's per-cell pixel offsets so it
- *       visually covers the freed pixel rect (for irregular layouts where the
- *       grid-coord strategies don't apply). */
+// Absorbs freed area: drop empty tracks, else expand matching-band neighbor, else extend a neighbor's pixel offsets.
 function compactAfterRemoval(
   cells: Cell[],
   grid: GridConfig,
@@ -370,7 +334,6 @@ function compactAfterRemoval(
   designW: number,
   designH: number,
 ): { cells: Cell[]; grid: GridConfig } {
-  // ---- Strategy 1: drop empty tracks --------------------------------------
   const emptyCols: number[] = [];
   for (let c = removed.colStart; c < removed.colStart + removed.colSpan; c++) {
     const occupied = cells.some(
@@ -395,7 +358,6 @@ function compactAfterRemoval(
     workCells = workCells.map((cell) => {
       let colStart = cell.colStart;
       let colSpan = cell.colSpan;
-      // Shift colStart left by the count of dropped tracks before it.
       for (const ec of emptyCols) {
         if (ec < colStart) colStart -= 1;
         else if (ec >= colStart && ec < colStart + colSpan) colSpan -= 1;
@@ -423,7 +385,6 @@ function compactAfterRemoval(
     return { cells: workCells, grid: nextGrid };
   }
 
-  // ---- Strategy 2: expand a neighbor with matching band -------------------
   const sameRow = (c: Cell) =>
     c.rowStart === removed.rowStart && c.rowSpan === removed.rowSpan;
   const sameCol = (c: Cell) =>
@@ -469,11 +430,6 @@ function compactAfterRemoval(
     };
   }
 
-  // ---- Strategy 3: extend an adjacent cell via pixel offsets --------------
-  // Compute the freed pixel rect (using grid coords pre-removal) and the rects
-  // of all remaining cells. Pick the candidate adjacent cell that shares the
-  // longest pixel-edge with the freed rect and extend its dx/dy/dw/dh to
-  // visually swallow the freed area.
   const innerW = designW - containerPadding * 2 - containerGap * (grid.cols - 1);
   const innerH = designH - containerPadding * 2 - containerGap * (grid.rows - 1);
   const removedRect = computeCellRect(removed, grid, innerW, innerH, containerPadding, containerGap);
@@ -486,7 +442,6 @@ function compactAfterRemoval(
     cell: Cell;
     side: 'e' | 'w' | 's' | 'n';
     sharedEdge: number;
-    /** The cell's pixel rect after extension. */
     extended: { x: number; y: number; w: number; h: number };
   };
   const candidates: Candidate[] = [];
@@ -494,7 +449,6 @@ function compactAfterRemoval(
   const spanH = removedRect.w + containerGap;
   const spanV = removedRect.h + containerGap;
   for (const { cell, rect } of cellRects) {
-    // East-side candidate: cell sits left of removed
     if (Math.abs(rect.x + rect.w + containerGap - removedRect.x) < EPS) {
       const overlap = Math.min(rect.y + rect.h, removedRect.y + removedRect.h) - Math.max(rect.y, removedRect.y);
       if (overlap > 0) {
@@ -504,7 +458,6 @@ function compactAfterRemoval(
         });
       }
     }
-    // West-side candidate: cell sits right of removed
     if (Math.abs(removedRect.x + removedRect.w + containerGap - rect.x) < EPS) {
       const overlap = Math.min(rect.y + rect.h, removedRect.y + removedRect.h) - Math.max(rect.y, removedRect.y);
       if (overlap > 0) {
@@ -514,7 +467,6 @@ function compactAfterRemoval(
         });
       }
     }
-    // South-side candidate: cell sits above removed
     if (Math.abs(rect.y + rect.h + containerGap - removedRect.y) < EPS) {
       const overlap = Math.min(rect.x + rect.w, removedRect.x + removedRect.w) - Math.max(rect.x, removedRect.x);
       if (overlap > 0) {
@@ -524,7 +476,6 @@ function compactAfterRemoval(
         });
       }
     }
-    // North-side candidate: cell sits below removed
     if (Math.abs(removedRect.y + removedRect.h + containerGap - rect.y) < EPS) {
       const overlap = Math.min(rect.x + rect.w, removedRect.x + removedRect.w) - Math.max(rect.x, removedRect.x);
       if (overlap > 0) {
@@ -536,9 +487,6 @@ function compactAfterRemoval(
     }
   }
 
-  // Reject candidates whose extension would overlap any other cell's rect
-  // (other than the candidate itself). Better to leave whitespace than to
-  // visually clobber a sibling cell.
   const overlapsOther = (cand: Candidate) =>
     cellRects.some(({ cell, rect }) => {
       if (cell.id === cand.cell.id) return false;
@@ -573,10 +521,7 @@ function compactAfterRemoval(
   };
 }
 
-/** Translate a point in design pixel space to a grid (col, row) tuple, using
- *  current track widths and gap. Returns null if the point lies outside the
- *  inner canvas. Then expands outwards from that slot to find the largest
- *  empty rectangle that contains it (used for "drop on whitespace" UX). */
+// Expands outward from the hit slot to find the maximal empty rect containing it.
 export function pointToGridSlot(
   px: number,
   py: number,
@@ -596,7 +541,6 @@ export function pointToGridSlot(
   const rowH = trackSizes(grid.rowSizes, grid.rows);
   const totalCol = colW.reduce((a, b) => a + b, 0) || 1;
   const totalRow = rowH.reduce((a, b) => a + b, 0) || 1;
-  // Walk track boundaries left-to-right.
   let acc = padding;
   let col = 0;
   for (let i = 0; i < grid.cols; i += 1) {
@@ -615,10 +559,8 @@ export function pointToGridSlot(
     row = i + 2;
   }
   if (row > grid.rows) row = grid.rows;
-  // If the slot is occupied, no whitespace there.
   const occ = buildOccupancy(cells, grid);
   if (occ[(row - 1) * grid.cols + (col - 1)]) return null;
-  // Expand outward from (col, row) to find the maximal empty rectangle.
   let c1 = col;
   while (c1 - 1 >= 1 && !occ[(row - 1) * grid.cols + (c1 - 2)]) c1 -= 1;
   let c2 = col;
@@ -640,9 +582,7 @@ export function pointToGridSlot(
   return { c: c1, r: r1, cs: c2 - c1 + 1, rs: r2 - r1 + 1 };
 }
 
-/** Caps a candidate placement rect at half the grid's dimensions (rounded up,
- *  min 1) so a single new cell doesn't claim the entire empty half of a sparse
- *  layout. Anchors the capped rect to the original top-left corner. */
+// Caps at half-grid dims so a single new cell can't claim a giant empty half.
 function capPlacementRect(
   rect: { c: number; r: number; cs: number; rs: number },
   grid: GridConfig,
@@ -657,10 +597,6 @@ function capPlacementRect(
   };
 }
 
-/** Find the largest rectangular empty region in the current grid (in grid
- *  coords). Returns null when no empty slot exists. Used by ADD_CELL so a new
- *  cell automatically fills the biggest whitespace instead of dropping into
- *  the first row-major empty slot. */
 export function findMaxEmptyRect(
   cells: Cell[],
   grid: GridConfig,
@@ -671,10 +607,8 @@ export function findMaxEmptyRect(
   for (let r = 1; r <= grid.rows; r++) {
     for (let c = 1; c <= grid.cols; c++) {
       if (occ[(r - 1) * grid.cols + (c - 1)]) continue;
-      // Maximum width starting at (c, r) — empty span on this row.
       let maxC = c;
       while (maxC + 1 <= grid.cols && !occ[(r - 1) * grid.cols + maxC]) maxC += 1;
-      // For each candidate end-col, find how far down the rectangle stays empty.
       for (let endC = c; endC <= maxC; endC += 1) {
         let endR = r;
         rowLoop: while (endR + 1 <= grid.rows) {
@@ -696,20 +630,7 @@ export function findMaxEmptyRect(
   return best;
 }
 
-/** Snap every cell to a clean integer-track grid:
- *
- *  Strategy: zero each cell's per-cell pixel offsets so their on-screen rect
- *  collapses back to the box defined by their grid coords + the current track
- *  weights. After this every cell occupies an integer number of columns/rows
- *  again, so vertical and horizontal borders align between rows.
- *
- *  Track weights (`colSizes`/`rowSizes`) are preserved — corner-drag
- *  redistributions (which are still a clean "everything in this column is
- *  this fraction wide") survive. Edge-drag tweaks, which can give different
- *  rows different boundaries, are flattened.
- *
- *  After snapping we run the whitespace absorber repeatedly so empty
- *  rectangles get swallowed by an adjacent cell. */
+// Zeros per-cell dx/dy/dw/dh, then runs the whitespace absorber until stable.
 export function alignGrid(
   state: PhotoGridState,
   padding: number,
@@ -718,16 +639,10 @@ export function alignGrid(
   designH: number,
 ): PhotoGridState {
   if (!state.cells.length) return state;
-  // 1. Zero every per-cell pixel offset. Each cell's rect now equals its
-  //    grid-track box; cells in the same column share a single x-boundary
-  //    and likewise for rows.
   let cells: Cell[] = state.cells.map((c) => ({
     ...c, dx: 0, dy: 0, dw: 0, dh: 0,
   }));
 
-  // 2. Resolve overlaps that may have appeared because two cells'
-  //    pixel-offset rects had been carved up between them. Shrink the later
-  //    cell until it doesn't overlap; if it can't shrink further, drop it.
   const placed: Cell[] = [];
   for (const c of cells) {
     let cur = c;
@@ -744,17 +659,11 @@ export function alignGrid(
 
   let nextState: PhotoGridState = { ...state, cells };
 
-  // Whitespace absorber: for every empty rectangular region left in the grid,
-  // run compactAfterRemoval against a synthetic "removed" cell sized to that
-  // region so the existing strategies (drop tracks / expand neighbor / pixel
-  // offset) collapse it.
   let absorberSafety = nextState.grid.cols * nextState.grid.rows + 4;
   while (absorberSafety > 0) {
     absorberSafety -= 1;
     const empty = findMaxEmptyRect(nextState.cells, nextState.grid);
     if (!empty) break;
-    // Build a phantom cell representing the empty rect so compactAfterRemoval
-    // can absorb it.
     const phantom: Cell = {
       ...blankCell(empty.c, empty.r),
       colSpan: empty.cs,
@@ -773,7 +682,6 @@ export function alignGrid(
       result.cells === nextState.cells &&
       result.grid === nextState.grid
     ) {
-      // No strategy applied; stop to avoid an infinite loop.
       break;
     }
     nextState = { ...nextState, cells: result.cells, grid: result.grid };
@@ -781,16 +689,6 @@ export function alignGrid(
   return nextState;
 }
 
-/** A "mood" is a creative parameter bundle that the random-layout generator
- *  picks from. Each one gives the canvas a recognizable feel (matted print,
- *  bento board, geometric collage, …) so re-clicking "Generate" actually
- *  produces visibly different results instead of one-style-with-jitter.
- *
- *  - `containerShapes` / `aspects`: the outer canvas variations.
- *  - `cellShapes`: the per-cell shape pool; a uniform random pick per cell.
- *  - `gap` / `padding`: a `[min, max]` pixel range that's later jittered.
- *  - `cellRadiusRange` / `containerRadiusRange`: percentage ranges for the
- *    rounded variants. */
 interface RandomMood {
   containerShapes: ShapeId[];
   aspects: string[];
@@ -831,7 +729,6 @@ const ALL_SHAPES: ShapeId[] = [
 ];
 
 const MOODS: RandomMood[] = [
-  // "Bento": rounded rects with breathing room.
   {
     containerShapes: ['rect', 'rounded'],
     aspects: ['1:1', '4:5', '4:3'],
@@ -841,7 +738,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [12, 30],
     containerRadiusRange: [8, 24],
   },
-  // "Mosaic": tightly packed rects.
   {
     containerShapes: ['rect'],
     aspects: ['1:1', '16:9', '4:3', '3:4'],
@@ -851,7 +747,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 0],
     containerRadiusRange: [0, 8],
   },
-  // "Matted": maximum padding, zero gap (the example screenshot).
   {
     containerShapes: ['rect'],
     aspects: ['1:1', '4:5', '3:4'],
@@ -861,7 +756,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 0],
     containerRadiusRange: [0, 0],
   },
-  // "Polaroid": squares with a generous mat and tiny gap.
   {
     containerShapes: ['rect', 'rounded'],
     aspects: ['1:1'],
@@ -871,7 +765,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 8],
     containerRadiusRange: [0, 12],
   },
-  // "Garden": soft organic shapes with breathing room.
   {
     containerShapes: ['rect', 'rounded', 'squircle'],
     aspects: ['1:1', '4:5', '3:4'],
@@ -881,7 +774,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 0],
     containerRadiusRange: [4, 24],
   },
-  // "Geometric": angular polygons, medium gap.
   {
     containerShapes: ['rect', 'rounded', 'hexagon'],
     aspects: ['1:1', '4:3', '3:4'],
@@ -891,7 +783,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 0],
     containerRadiusRange: [0, 16],
   },
-  // "Mixed media": every shape, looser gaps — chaotic but interesting.
   {
     containerShapes: ['rect', 'rounded', 'oval', 'arch'],
     aspects: ALL_ASPECTS,
@@ -901,7 +792,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 24],
     containerRadiusRange: [0, 24],
   },
-  // "Minimal": flat rects, no padding, hairline gap.
   {
     containerShapes: ['rect'],
     aspects: ['1:1', '16:9'],
@@ -911,7 +801,6 @@ const MOODS: RandomMood[] = [
     cellRadiusRange: [0, 0],
     containerRadiusRange: [0, 0],
   },
-  // "Soft": squircles + circles, generous padding.
   {
     containerShapes: ['rounded', 'squircle'],
     aspects: ['1:1', '4:5'],
@@ -923,9 +812,6 @@ const MOODS: RandomMood[] = [
   },
 ];
 
-/** When `squaresOnly` is true, callers ignore most of the mood and force
- *  rect cells / rect container — but we still need a gap/padding range, so we
- *  return a deterministic "Polaroid"-flavoured mood. */
 function pickMood(squaresOnly: boolean): RandomMood {
   if (squaresOnly) {
     return {
@@ -945,24 +831,17 @@ function pickFromArray<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/** Pick a random integer in `[lo, hi]` inclusive. */
 function jitterInt(range: [number, number]): number {
   const [lo, hi] = range;
   return Math.round(lo + Math.random() * (hi - lo));
 }
 
-/** Pick a (cols, rows) factorization for `n` that minimises the deviation
- *  from a square grid for the current aspect ratio. We prefer pairs whose
- *  product equals `n`; if none exists we fall back to the first pair whose
- *  product is ≥ `n`. */
 function pickEqualGrid(n: number, aspect: number): { cols: number; rows: number } {
   const N = Math.max(1, Math.floor(n));
-  // Exact factor pairs first.
   const exact: Array<{ cols: number; rows: number; score: number }> = [];
   for (let cols = 1; cols <= N; cols += 1) {
     if (N % cols !== 0) continue;
     const rows = N / cols;
-    // Score: how close is (cols/rows) to the target aspect?
     const ratio = cols / rows;
     const score = Math.abs(Math.log(ratio / aspect));
     exact.push({ cols, rows, score });
@@ -971,11 +850,9 @@ function pickEqualGrid(n: number, aspect: number): { cols: number; rows: number 
     exact.sort((a, b) => a.score - b.score);
     return { cols: exact[0].cols, rows: exact[0].rows };
   }
-  // Should be unreachable for N >= 1 since 1*N is always a factor.
   return { cols: N, rows: 1 };
 }
 
-/** Uniform NxM layout with all-equal cells. */
 export function generateEqualLayout(
   cellCount: number,
   aspect = 1,
@@ -1002,14 +879,7 @@ export function generateEqualLayout(
   };
 }
 
-/** Recursive Mondrian-style subdivision. Starts with a single 1×1 rect, then
- *  repeatedly splits the largest rect (horizontally or vertically along the
- *  longer axis with a 30–70 % ratio) until N rects exist. Distinct x/y edges
- *  become the grid's column/row boundaries; each rect's grid coordinates are
- *  derived from those edges. Track sizes (`colSizes`/`rowSizes`) carry the
- *  split ratios so the rendered layout matches the geometric subdivision —
- *  every row and column is occupied by at least one cell, so there's no empty
- *  whitespace anywhere. */
+// Recursive Mondrian split; distinct edges become grid tracks so layout has no whitespace.
 export function generateRandomLayout(cellCount: number): {
   cols: number;
   rows: number;
@@ -1024,7 +894,7 @@ export function generateRandomLayout(cellCount: number): {
     rects.sort((a, b) => b.w * b.h - a.w * a.h);
     const r = rects.shift()!;
     const splitVertical = r.w >= r.h ? Math.random() < 0.85 : Math.random() < 0.15;
-    const t = 0.3 + Math.random() * 0.4; // 30–70 %
+    const t = 0.3 + Math.random() * 0.4;
     if (splitVertical) {
       rects.push({ x: r.x, y: r.y, w: r.w * t, h: r.h });
       rects.push({ x: r.x + r.w * t, y: r.y, w: r.w * (1 - t), h: r.h });
@@ -1081,9 +951,6 @@ function buildOccupancy(cells: Cell[], grid: GridConfig): boolean[] {
 export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
   switch (action.type) {
     case 'REPLACE':
-      // A fresh session/template should get a fresh filename so users don't
-      // accidentally save over the last export. The incoming snapshot's
-      // `filename` is preserved only if it was non-default.
       return {
         ...action.state,
         output: { ...action.state.output, filename: generateFilename() },
@@ -1094,16 +961,12 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return { ...state, output: { ...state.output, ...action.patch } };
     case 'SET_GRID': {
       const next: GridConfig = { ...state.grid, ...action.patch };
-      // Track weights must always match cols/rows; reset on dimension changes.
       next.colSizes = next.cols === state.grid.cols ? state.grid.colSizes : undefined;
       next.rowSizes = next.rows === state.grid.rows ? state.grid.rowSizes : undefined;
-      // Drop cells that fall outside the new bounds.
       let cells = state.cells.filter(
         (c) =>
           c.colStart + c.colSpan - 1 <= next.cols && c.rowStart + c.rowSpan - 1 <= next.rows,
       );
-      // Fill any uncovered grid slots with empty cells so the Layers panel
-      // reflects the visible grid 1:1.
       const occ = buildOccupancy(cells, next);
       for (let r = 1; r <= next.rows; r++) {
         for (let c = 1; c <= next.cols; c++) {
@@ -1135,8 +998,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         grid: { cols: p.cols, rows: p.rows },
         cells,
         selectedCellIds: [],
-        // A new template = a new session. Regenerate the filename so the next
-        // export doesn't trample the previous template's saved file.
         output: { ...state.output, filename: generateFilename() },
       };
     }
@@ -1168,10 +1029,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return { ...state, grid };
     }
     case 'ADD_CELL': {
-      // Find the LARGEST empty rectangle in the grid and place the new cell
-      // there. Cap the placement so a giant empty half of a sparse grid
-      // doesn't spawn an outsized cell. If the grid is fully occupied, grow
-      // it by one track in the shorter axis (mirroring the previous fallback).
       const max = findMaxEmptyRect(state.cells, state.grid);
       if (max) {
         const placed = capPlacementRect(max, state.grid);
@@ -1210,9 +1067,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       };
     }
     case 'DUPLICATE_CELL': {
-      // Clone a cell's image + style; place into the largest empty rectangle
-      // (capped to half the grid). Falls back to growing the grid only when
-      // the layout is fully occupied.
       const src = state.cells.find((c) => c.id === action.id);
       if (!src) return state;
       const max = findMaxEmptyRect(state.cells, state.grid);
@@ -1238,8 +1092,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
           selectedCellIds: [dup.id],
         };
       }
-      // No whitespace anywhere — grow the grid by one track in the shorter
-      // axis and drop the duplicate at 1×1 there.
       const grid: GridConfig = { ...state.grid };
       let placedAt: { c: number; r: number };
       if (grid.cols <= grid.rows) {
@@ -1338,8 +1190,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const updated = state.cells.map((c) =>
         c.id === action.id ? { ...c, colStart, rowStart, colSpan, rowSpan } : c,
       );
-      // Resize never grows the grid; reject if displaced cells can't be relocated
-      // within the current bounds (the user's drag stops at that boundary).
       const reflowed = reflowAroundMover(updated, state.grid, action.id, false);
       if (!reflowed) return state;
       return { ...state, grid: reflowed.grid, cells: reflowed.cells };
@@ -1348,7 +1198,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const a = state.cells.find((c) => c.id === action.sourceId);
       const b = state.cells.find((c) => c.id === action.targetId);
       if (!a || !b || a.id === b.id) return state;
-      // Swap grid positions + spans, keeping each cell's image and styling.
       return {
         ...state,
         cells: state.cells.map((c) => {
@@ -1366,11 +1215,22 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const a = state.cells.find((c) => c.id === action.aId);
       const b = state.cells.find((c) => c.id === action.bId);
       if (!a || !b) return state;
+      // Framing travels with the image so View-Transitions don't jump mid-swap.
       return {
         ...state,
         cells: state.cells.map((c) => {
-          if (c.id === a.id) return { ...c, image: b.image, fit: b.fit, offsetX: 0, offsetY: 0, scale: 1, rotation: 0 };
-          if (c.id === b.id) return { ...c, image: a.image, fit: a.fit, offsetX: 0, offsetY: 0, scale: 1, rotation: 0 };
+          if (c.id === a.id) return {
+            ...c,
+            image: b.image, fit: b.fit,
+            offsetX: b.offsetX, offsetY: b.offsetY,
+            scale: b.scale, rotation: b.rotation,
+          };
+          if (c.id === b.id) return {
+            ...c,
+            image: a.image, fit: a.fit,
+            offsetX: a.offsetX, offsetY: a.offsetY,
+            scale: a.scale, rotation: a.rotation,
+          };
           return c;
         }),
       };
@@ -1385,9 +1245,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return { ...state, selectedCellIds: ids };
     }
     case 'SELECT_RANGE': {
-      // Range select: anchor = current primary (first selected). Pick every
-      // cell whose row-major position lands between the anchor's and the
-      // clicked cell's, inclusive. Empty anchor → just select the clicked cell.
       const anchorId = state.selectedCellIds[0] ?? action.id;
       const order = state.cells
         .slice()
@@ -1404,16 +1261,12 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const lo = Math.min(aIdx, bIdx);
       const hi = Math.max(aIdx, bIdx);
       const range = order.slice(lo, hi + 1).map((c) => c.id);
-      // Keep the anchor as the primary so the inspector keeps its source.
       const ids = anchorId
         ? [anchorId, ...range.filter((id) => id !== anchorId)]
         : range;
       return { ...state, selectedCellIds: ids };
     }
     case 'MOVE_CELL_DROP': {
-      // Move a cell to a new (col, row) anchor; cells overlapping the new
-      // position are pushed away by reflowAroundMover. Mirrors MOVE_CELL but
-      // preserves spans by clamping into the existing grid first.
       const target = state.cells.find((c) => c.id === action.id);
       if (!target) return state;
       const colStart = Math.max(
@@ -1439,7 +1292,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       if (ids.length < 2) return state;
       const targets = state.cells.filter((c) => ids.includes(c.id));
       if (targets.length < 2) return state;
-      // First selected wins as the surviving cell.
       const primary = state.cells.find((c) => c.id === ids[0]);
       if (!primary) return state;
       const cMin = Math.min(...targets.map((c) => c.colStart));
@@ -1452,7 +1304,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         rowStart: rMin,
         colSpan: cMax - cMin + 1,
         rowSpan: rMax - rMin + 1,
-        // Wipe pixel offsets so the merged rect is a clean track-aligned box.
         dx: 0, dy: 0, dw: 0, dh: 0,
       };
       const cells = state.cells
@@ -1465,9 +1316,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       if (ids.length < 2) return state;
       const primary = state.cells.find((c) => c.id === ids[0]);
       if (!primary) return state;
-      // Copy the primary's shape (and its companion radius / border) onto every
-      // selected cell so the visual silhouette becomes consistent. Image and
-      // position are untouched.
       const targets = new Set(ids);
       return {
         ...state,
@@ -1490,22 +1338,9 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const isRow = action.axis === 'row';
       const R = isRow ? target.rowStart : target.colStart;
       const S = isRow ? target.rowSpan : target.colSpan;
-      const bandStart = R; // first track of target's band (1-based)
-      const bandEnd = R + S - 1; // last track of target's band (1-based)
+      const bandStart = R;
+      const bandEnd = R + S - 1;
 
-      // Strategy: REPLACE the target's S band tracks with N tracks of equal
-      // weight = bandTotal/N. Each sub-cell occupies exactly one of the N
-      // new tracks → equal halves AND together they cover the SAME pixel
-      // rect the target had before the split (band total weight is
-      // preserved). Tracks outside the band keep their old weights, so
-      // cells fully outside the band don't move.
-      //
-      // Cells crossing the band have their colStart/colEnd snapped to the
-      // nearest new track boundary (proportional to where they sat within
-      // the OLD band by cumulative weight). For uniform band weights this
-      // is identity; for non-uniform weights the cell's edge may shift by
-      // up to half a new track — acceptable, and avoids the alternative
-      // (overlap with sub-cells / unequal sub-cells).
       const sizes = isRow
         ? trackSizes(state.grid.rowSizes, state.grid.rows)
         : trackSizes(state.grid.colSizes, state.grid.cols);
@@ -1514,15 +1349,9 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const newTrackWeight = bandTotal / N;
       const newBandTracks = new Array<number>(N).fill(newTrackWeight);
 
-      // Cumulative band weights: cum[i] = sum(bandWeights[0..i-1]).
-      // cum[0] = 0, cum[S] = bandTotal.
       const cum: number[] = [0];
       for (const w of bandWeights) cum.push(cum[cum.length - 1] + w);
 
-      // For an OLD 1-based grid index `k` inside the band, return the
-      // 0..N offset within the new band that best matches the old position
-      // of either its START edge (atEnd=false → use cum[k - R]) or its
-      // END edge (atEnd=true → use cum[k - R + 1]).
       const snapInBand = (k: number, atEnd: boolean): number => {
         const idx = k - R + (atEnd ? 1 : 0);
         const safe = Math.max(0, Math.min(S, idx));
@@ -1563,10 +1392,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         }
       }
 
-      // Replace target with N equal-size sub-cells. Each sub-cell occupies
-      // exactly ONE of the N new tracks within the band, in the same row /
-      // column outside the split axis as the target. Together they cover
-      // the SAME pixel rect the target had — no growth, no shrink, no drift.
       const subs: Cell[] = [];
       for (let i = 0; i < N; i += 1) {
         const sub: Cell = {
@@ -1576,7 +1401,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
           colStart: isRow ? target.colStart : bandStart + i,
           rowSpan: isRow ? 1 : target.rowSpan,
           colSpan: isRow ? target.colSpan : 1,
-          // Pixel offsets reset — the sub-cell exactly fills its new track.
           dx: 0,
           dy: 0,
           dw: 0,
@@ -1585,10 +1409,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         subs.push(sub);
       }
 
-      // Update grid track sizes: replace the band's S original tracks with
-      // N equal-weight tracks summing to the band's original total weight.
-      // Tracks outside the band keep their old weights, so the canvas
-      // doesn't change overall size.
       const nextGrid: GridConfig = { ...state.grid };
       const newSizes = [
         ...sizes.slice(0, bandStart - 1),
@@ -1615,7 +1435,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       const target = state.cells.find((c) => c.id === action.id);
       if (!target) return state;
       const { colStart, rowStart, colSpan, rowSpan } = action;
-      // Reject if the destination overlaps any other cell in grid coords.
       const proposed: Cell = { ...target, colStart, rowStart, colSpan, rowSpan, dx: 0, dy: 0, dw: 0, dh: 0 };
       const conflict = state.cells.some((c) => c.id !== target.id && rectsOverlap(c, proposed));
       if (conflict) return state;
@@ -1625,13 +1444,8 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       };
     }
     case 'GENERATE_RANDOM_LAYOUT': {
-      // "Equal" implies a uniform NxM grid; "squaresOnly" is treated as a
-      // strict-rect superset of equal (rect cells but Mondrian-style sizing).
       const isEqual = action.equal === true;
       const isFlat = isEqual || action.squaresOnly === true;
-      // Ratio (w/h) used for the equal-cells aspect picker. Honour the
-      // current container aspect instead of forcing 1:1 so a 16:9 container
-      // gets 16:9-friendly cell counts.
       const currentAspect = (() => {
         const a = ASPECT_RATIOS.find((x) => x.id === state.container.aspect);
         if (!a || !a.h) return 1;
@@ -1642,10 +1456,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         : generateRandomLayout(action.cellCount);
       const mood = pickMood(action.squaresOnly === true);
 
-      // Preserve existing images: walk the new cells in row-major order and
-      // hand each an image from the previous cell list (also row-major). This
-      // keeps photos in place across re-shuffles even when the cell count
-      // changes (extra new cells stay empty; surplus old images are dropped).
       const oldImages = state.cells
         .slice()
         .sort((a, b) => a.rowStart - b.rowStart || a.colStart - b.colStart)
@@ -1692,8 +1502,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
         ...state,
         container: {
           ...state.container,
-          // Equal-cells mode keeps the user's current container aspect/shape
-          // — they explicitly asked for a tidy uniform grid.
           shape: isEqual
             ? state.container.shape
             : action.squaresOnly
@@ -1755,8 +1563,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return { ...state, grid: { cols, rows }, cells };
     }
     case 'FILL_EMPTY_NO_GROW': {
-      // Place each image into the next empty cell in row-major order.
-      // Surplus images are discarded (no grid growth).
       const imgs = [...action.images];
       if (!imgs.length) return state;
       const cells = state.cells.map((c) => {
@@ -1778,8 +1584,6 @@ export function reducer(state: PhotoGridState, action: Action): PhotoGridState {
       return {
         ...state,
         selectedWatermark: action.selected,
-        // Selecting the watermark steals focus from any cell / text-layer
-        // selection so the inspector pivots cleanly.
         ...(action.selected ? { selectedCellIds: [], selectedTextLayerId: null } : {}),
       };
     case 'ADD_TEXT_LAYER': {
