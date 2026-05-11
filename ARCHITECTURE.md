@@ -144,16 +144,22 @@ The cell stores that ref. `previewUrl` is local-only; the backend never sees it.
 2. **`window.showSaveFilePicker`** so the user picks a name + location.
 3. **`<a download>` anchor click** — works everywhere, falls back to the browser's default download path.
 
-The default `output.filename` is generated each session (and on every template apply / `REPLACE`) via `generateFilename()` → `PG_<base36-secs>` so a fresh canvas gets a fresh name without the user typing one. `App.tsx` also tracks `uploading` / `exporting` flags and disables both `Upload` and `Export` buttons whenever either is in flight.
+The default `output.filename` is generated each session (and on every template apply / `REPLACE`) via `generateFilename()` → `PG_<base36-secs>` so a fresh canvas gets a fresh name without the user typing one.
+
+`App.tsx` tracks two structured progress objects: `uploadProgress: UploadBatchState | null` and `exportProgress: ExportBatchState | null`. The `uploading` / `exporting` booleans threaded into child components are derived from these (`progress !== null`). The objects power the two bottom-of-canvas pills `<UploadProgress>` and `<ExportProgress>` — there is no longer a full-canvas blocking spinner during uploads.
+
+All multi-file uploads route through a single `uploadBatch(files)` callback (passed to `StageCanvas`, `Inspector/CellTab`, `Inspector/ContainerTab`). It runs uploads through `mapPool(files, 4, ingestFile)` so 4 are in flight at once, and aggregates per-byte XHR `upload.onprogress` events into `uploadProgress.bytes` so the pill ticks live. `ingestFile` / `uploadImage` accept an optional `onProgress` callback for this — they were converted from `fetch(FormData)` to `XMLHttpRequest` to make the upload body observable (fetch can't report request-body progress).
 
 ### 5d. Render side
 
 `api/export.py:export`:
 
 1. Walks `state.cells`. For each cell with an image, looks up the cached file with `find_cached(hash)`. If anything is missing, returns 409 with the list of missing hashes — no rendering happens.
-2. While walking, captures `source_pixels_max` so `select_renderer()` can decide between Pillow and pyvips.
-3. Hands off to `renderer.render(state)` inside `asyncio.to_thread` so the event loop stays responsive.
+2. Preflight `Image.open` probes (used to derive `source_pixels_max` for `select_renderer()`) are fanned out via `asyncio.gather(*[asyncio.to_thread(_probe_pixels, p) for p in image_refs])` so a 16-cell grid doesn't serialize on disk I/O.
+3. Hands off to `renderer.render(state)` inside `asyncio.to_thread`, **gated by a module-level `asyncio.Semaphore(MAX_CONCURRENT_RENDERS)`** (env var, default 3 on a 4-core VPS) so a burst of exports can't pin every CPU core and starve uploads/health.
 4. On success, returns the bytes with `Content-Disposition` plus `X-Photogrid-Bytes`, `X-Photogrid-Renderer`, `X-Photogrid-Elapsed-Ms` headers.
+
+The frontend's `exportImage` consumes the response in two phases. **Phase 1 (render):** ticks `{ phase: 'render', elapsedMs }` events until `fetch()` resolves (response headers arrive). **Phase 2 (download):** streams the body via `res.body.getReader()`, accumulating chunks and reporting `{ phase: 'download', bytes, total }` per chunk — the `<ExportProgress>` pill flips from "Rendering… 4.2s" to "Downloading 3.1 / 8.7 MB · 37 %". `total` comes from the backend's `X-Photogrid-Bytes` header (with `Content-Length` as fallback).
 
 ### 5e. Pillow render in detail
 
@@ -219,7 +225,7 @@ Multi-selected cells get the `.cell.multi-selected` modifier (outline thickens t
 - **`MERGE_CELLS { ids }`** — replaces the primary cell with the bounding rect of all selected cells. Pixel offsets zeroed.
 - **`SYNC_CELLS_SHAPE { ids }`** — copies the primary's `shape` + `cellRadius` onto every other selected cell.
 - **`SPLIT_CELL { id, axis, count }`** — N sub-cells along an axis. REPLACES the target's S band tracks with N tracks of equal weight (each = `bandTotal / N`). Each sub-cell occupies one of the N new tracks, so halves are always equal AND together cover the same pixel rect the target had before the split. Cells fully outside the band don't move. Cells crossing the band have their grid-coord endpoints snapped to the nearest new track boundary by cumulative-weight proportion; for uniform band weights this is identity. The split never introduces overlap.
-- **`SWAP_CELLS { aId, bId }`** — swaps just the *images* between two cells. Used by **shift+drag** in the canvas.
+- **`SWAP_CELLS { aId, bId }`** — swaps the *image and its framing* (`image`, `fit`, `offsetX`, `offsetY`, `scale`, `rotation`) between two cells, leaving each cell's grid position, span, shape, and border alone. Used by **shift+drag** in the canvas. The framing travels with the image so the View Transition animates cleanly — earlier this action zeroed `offsetX/Y/scale/rotation` on both ends, which caused a visible mid-animation snap.
 - **`MOVE_CELL`** / **`RESIZE_CELL`** — dispatched from the inspector's number inputs. Run `reflowAroundMover`; `RESIZE_CELL` rejects if displacement would require growing the grid.
 - **`MOVE_CELL_DROP { id, col, row }`** — committed by **plain drag** in the canvas. Clamps `(col, row)` into the existing grid, zeroes the dragged cell's pixel offsets, and runs `reflowAroundMover` so cells already at the destination get pushed to free slots (grid grows only when no slot exists). The drop target is computed every frame during the drag (`elementFromPoint` over a cell, otherwise `pointToGridSlot`); a dashed preview rect renders inside `.board` so the user sees exactly where the cell will land.
 - **`MOVE_CELL_TO_RECT`** / **`MOVE_CELL_TO_CELL`** — still in the reducer; reachable programmatically (the inspector inputs and template apply paths can use them).
@@ -360,7 +366,7 @@ Right-clicking a cell that isn't already in the multi-selection replaces the sel
 
 ## 9. Build & deploy
 
-- **Frontend Dockerfile** is multi-stage: `node:20-alpine` builds the SPA (`vite build`); `nginx:1.27-alpine` serves the static output. The `nginx.conf` adds gzip, an `/healthz` endpoint, the SPA fallback, and the `/api/*` reverse proxy to `backend:8000`.
+- **Frontend Dockerfile** is multi-stage: `node:20-alpine` builds the SPA (`vite build`); `nginx:1.27-alpine` serves the static output. The `nginx.conf` adds gzip + **`gzip_static on`** (nginx serves precompressed `.gz` siblings produced at build time by `vite-plugin-compression`, skipping per-request gzip CPU), an `/healthz` endpoint, the SPA fallback, and the `/api/*` reverse proxy to `backend:8000`. The Vite build also writes `.br` siblings — they sit unused until the nginx image is upgraded to one that includes `ngx_brotli`. Sourcemaps are off by default in production builds; set `SOURCEMAP=1` to opt back in for a debug build.
 - **Backend Dockerfile** is also multi-stage: a build stage installs from `pyproject.toml` (with `[vips]` extra) into `/install`; the runtime stage is `python:3.12-slim` with only the runtime libs (`libmagic1`, `libheif1`, `libvips42`, etc.). Runs as a non-root `app` user. `HEALTHCHECK` curls `/api/healthz`.
 - **Compose** uses one named volume (`photogrid-cache`) mounted at `/var/cache/photogrid` in the backend. The frontend `depends_on: backend: condition: service_healthy` so it only comes up after the API is ready.
 - **Prod overlay** (`docker-compose.prod.yml`) switches the backend to gunicorn, adds resource limits (2 GB / 2 CPU on backend, 256 MB / 0.5 CPU on frontend), and rotates JSON logs at 10 MB × 5.
@@ -390,7 +396,9 @@ Everything tunable is an env var read by `photogrid/config.py:Settings`:
 | `LOG_LEVEL` | `INFO` | Structlog filter level. |
 | `ALLOWED_ORIGINS` | `*` | CORS list. Prod uses same-origin via the nginx proxy, so this is mostly for dev. |
 | `WEB_CONCURRENCY` | 4 | gunicorn worker count (prod). |
+| `MAX_CONCURRENT_RENDERS` | 3 | Semaphore in `api/export.py` capping concurrent Pillow renders so a burst doesn't pin every core. Read at module load, so set it in `.env` before `make prod-up`. Read by `photogrid.api.export` only (not in `config.Settings`). |
 | `FRONTEND_PORT` / `BACKEND_PORT` | 8090 / 8010 | Host port mappings (your `.env` overrides 8080/8000 because those were taken locally). |
+| `SOURCEMAP` | _(unset)_ | Set to `1` at frontend build time to emit `.map` files; default is **off** in prod for smaller bundles. |
 
 The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The Dockerfile passes it through as a build arg; in dev Vite proxies `/api` to `http://localhost:8000`.
 
@@ -412,7 +420,7 @@ The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The
 | Click outside → deselect | `StageCanvas.tsx:onStageMouseDown`, `Escape` keybind in `App.tsx` (text → watermark → cells) | n/a |
 | Click rule (single click only focuses; double-click opens picker, debounced) | `dragRef.{wasPrimary, shift}` checked in mouseup; `pickerOpenRef` guard in `uploadToCell` | n/a |
 | Right-click never opens picker | `onCellMouseDown` bails on `e.button !== 0` | n/a |
-| Cell drag (plain = reposition image, alt = move cell, shift = swap images) | `StageCanvas.tsx:onCellMouseDown` + window listeners; `UPDATE_CELL` / `MOVE_CELL_DROP` / `SWAP_CELLS` dispatched on mouseup based on `dragRef.kind`. Drop preview rendered inside `.board` for `move` drags. | n/a |
+| Cell drag (plain = reposition image, alt = move cell, shift = swap images) | `StageCanvas.tsx:onCellMouseDown` + window listeners; `UPDATE_CELL` / `MOVE_CELL_DROP` / `SWAP_CELLS` dispatched on mouseup based on `dragRef.kind`. Drop preview rendered inside `.board` for `move` drags. `SWAP_CELLS` swaps the framing (offset/scale/rotation) with the image so the View Transition animates without a jump. | n/a |
 | Wheel zoom inside a cell | `CellView.onWheel` → `UPDATE_CELL { scale }` | scale baked in by `compose_cell` |
 | Edge resize (cell pair) | `StageCanvas.tsx:onHandleDown` edge branch + `EDGE_RESIZE` | `cell_box(...dx, dy, dw, dh)` |
 | Corner resize (track redistribute) | `StageCanvas.tsx:onHandleDown` corner branch + `RESIZE_TRACKS` | `grid_tracks(...col_sizes, row_sizes)` |
@@ -438,7 +446,9 @@ The frontend's only build-time variable is `VITE_API_BASE` (default `/api`). The
 | Heart silhouette parity | `state/shapes.ts` SVG path | `renderer/shapes.py` samples the same four cubic beziers at 64 steps each |
 | Output filename + format (PNG / JPG / WebP / SVG) | `Inspector/OutputTab` File section; default name auto-generated by `state/reducer.ts:generateFilename` → `PG_YYYYMMDD_HHMMSS`, regenerated on `RESET` / `REPLACE` / `APPLY_PRESET` | response `Content-Disposition` is ignored; frontend owns the name. SVG path is a base64-PNG `<image>` wrapper (`pillow_renderer.py:_encode`) |
 | Save folder + filename dedup | `api/folder.ts` (FSA + IndexedDB); `writeBlobToFolder` walks `_1`, `_2`, … and returns the actual saved name | n/a |
-| Disable Upload / Export while busy | `App.tsx:uploading` + `exporting` flags → `TopBar` `busy` prop. The `uploading` flag is also threaded into `StageCanvas`, `LeftPanel`, and `Inspector` (CellTab + ContainerTab) so per-cell, bg, and watermark file pickers are gated, and `StageCanvas` paints a blocking spinner overlay while uploads are in flight. | n/a |
+| Disable Upload / Export while busy | `App.tsx:uploadProgress` / `exportProgress` structured state → boolean `uploading` / `exporting` props for `TopBar` `busy`. The `uploading` boolean is threaded into `StageCanvas`, `LeftPanel`, and `Inspector` (CellTab + ContainerTab) so per-cell, bg, and watermark file pickers are gated. The canvas stays interactive during uploads — progress lives in the sticky `<UploadProgress>` pill rather than a blocking overlay. | n/a |
+| Upload progress (per-byte, per-file) | `App.tsx:uploadBatch` runs `mapPool(files, 4, ingestFile)` and aggregates XHR `upload.onprogress` events into `<UploadProgress>`. | `images.py:upload_image` runs `cache.store_stream` and `Image.open` inside `asyncio.to_thread` so a slow WAN upload doesn't pin a gunicorn worker. |
+| Export progress (render → download) | `api/client.ts:exportImage` ticks a render-elapsed counter until response headers arrive, then streams `res.body.getReader()` and emits `{ phase, bytes, total, elapsedMs }` events into `<ExportProgress>`. | `export.py` preflight uses `asyncio.gather` of `asyncio.to_thread(_probe_pixels)`; render is gated by `asyncio.Semaphore(MAX_CONCURRENT_RENDERS)` (default 3). |
 | Image fit (export EXIF orientation) | n/a | `api/images.py:upload` and `renderer/pillow_renderer.py:_open_source` / bg image / `renderer/overlays.py:composite_watermark` all run `ImageOps.exif_transpose` so the orientation of cover/contain/fill matches the browser's `createImageBitmap` preview. |
 | Templates | `state/templates.ts` (localStorage) + `LeftPanel` (delete confirmation via `<Modal>`, `<TemplateRow>` with double-click rename → `Templates.rename`) | rehydrates cell + bg-image + watermark-image previews via `GET /api/images/{hash}` |
 | Shuffle defaults to live cell count | `LeftPanel.tsx` useEffect syncs `randRaw` to `state.cells.length` on every change | n/a |

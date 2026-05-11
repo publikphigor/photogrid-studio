@@ -122,7 +122,9 @@ the file persisting on the VPS, not on being recreated each deploy.
     grows in the shorter axis only when no slot exists).
   - **plain drag inside an empty cell** → MOVE (no image to reposition).
   - **shift+drag a populated cell**, drop on another cell → `SWAP_CELLS`
-    (images only; positions/spans untouched).
+    (image + its framing — fit / offsetX / offsetY / scale / rotation —
+    travels with the image; cell positions / spans / shape stay put).
+    Earlier this reset framing on both cells, which jumped mid-animation.
   - **shift+click** → range-select from the primary anchor to this cell
     (`SELECT_RANGE`). Anchor = current `selectedCellIds[0]`; row-major
     ordering builds the picked range.
@@ -225,10 +227,27 @@ the file persisting on the VPS, not on being recreated each deploy.
 
 ## Comments
 
-Default to writing no comments. When one is necessary (non-obvious why,
-hidden constraint, workaround for a specific bug), keep it to a single
-short line. Don't write multi-line comment blocks. Don't explain WHAT
-the code does — names already do that.
+**Default to writing no comments.** Only write a comment when the code
+hides a non-obvious *why* — a constraint, an invariant, a workaround for
+a specific bug, a surprising browser/library quirk. Everything else
+should be carried by good names.
+
+When a comment IS necessary:
+
+- **Single line, full stop.** No multi-line blocks. No paragraphs. If
+  you can't say it in one line, the code probably needs a rename or a
+  helper, not a comment.
+- **Short and direct.** State the *why* in as few words as possible.
+  Drop hedging, drop history ("we used to…"), drop tutorials.
+- **Never explain WHAT the code does.** `// Increment counter` above
+  `counter++` is noise. The name and the operator already say it.
+- **No section banners, no decorative dividers, no TODO/FIXME drops**
+  without a tracked issue.
+- **No comments for removed code.** Just delete it; git remembers.
+
+If you find yourself writing a comment to explain a tricky block, ask
+whether extracting a well-named function would say it better. Usually
+it would.
 
 ## Don't break these invariants
 
@@ -258,6 +277,23 @@ the code does — names already do that.
   Bumping `MAX_PIXELS_MP` past a few hundred MP eats memory fast.
 - **`COMPOSE_FILE=` prefix** in the Makefile is intentional; remove only if
   you really mean to honour an external override.
+- **Upload + export progress is two-track.** Multi-file uploads always go
+  through `App.tsx:uploadBatch` (`mapPool` of 4 + XHR `onProgress` events)
+  so they're parallelised AND surface per-byte progress in the
+  `<UploadProgress>` pill. Don't reintroduce `setUploading(bool)` callers
+  or serial `for...await ingestFile` loops. The export path streams the
+  response body via `res.body.getReader()` and reports two phases
+  (`render` → `download`) to `<ExportProgress>`. The server-side render is
+  CPU-bound and gated by `MAX_CONCURRENT_RENDERS` (default 3) so a burst
+  can't pin every core — if you adjust the render path, keep the
+  semaphore in place.
+- **Backend upload + export I/O must not block the event loop.**
+  `images.py:upload_image` runs both `cache.store_stream` (chunked disk
+  write) and the EXIF probe inside `asyncio.to_thread`; `export.py`
+  preflight probes via `asyncio.gather(*[asyncio.to_thread(...)])`. The
+  underlying functions are sync, but a single slow WAN upload otherwise
+  pins the whole gunicorn worker. If you add another sync I/O step in a
+  request handler, wrap it.
 
 ## Tests
 
@@ -300,11 +336,16 @@ frontend/src/
                        saved templates (delete confirm modal, dbl-click
                        rename via TemplateRow) + Layers (text layers + cells)
     TopBar.tsx         undo/redo, theme, Align Grid, Upload, Export
+    UploadProgress.tsx sticky bottom pill driven by App.uploadProgress
+                       (done/total + bytes + active filename)
+    ExportProgress.tsx same shape; two phases (render → download)
     Inspector/         Container / Cell / Canvas / Output tabs
                        Cell tab does batch editing (UPDATE_CELLS) when 2+
                        selected; Canvas tab manages text layers
   api/
-    client.ts          ingestFile (stores ORIGINAL w/h), exportImage,
+    client.ts          ingestFile (XHR + onProgress), uploadImage (XHR),
+                       mapPool (bounded concurrency), exportImage
+                       (streamed body + 'render'/'download' phases),
                        imageBlobUrl, stripPreviewUrls (cells + bgImage +
                        watermark.image)
     folder.ts          FSA directory handle persistence
@@ -312,9 +353,12 @@ frontend/src/
 
 backend/photogrid/
   api/
-    images.py          POST/HEAD/GET upload + cache lookup
+    images.py          POST/HEAD/GET upload + cache lookup; disk write +
+                       EXIF probe run inside asyncio.to_thread
     export.py          /api/export: pre-flight 409 (cells + bgImage +
-                       watermark.image), render dispatch
+                       watermark.image, probes via asyncio.gather),
+                       render dispatch behind asyncio.Semaphore
+                       (MAX_CONCURRENT_RENDERS, default 3)
     health.py          /api/healthz
   cache/disk.py        sha256 disk cache + sweeper
   renderer/
