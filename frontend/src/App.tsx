@@ -138,7 +138,7 @@ export function App() {
 
     function flashToast(msg: string) {
       setToast(msg);
-      setTimeout(() => setToast(null), 2400);
+      setTimeout(() => setToast(null), 3000);
     }
   }, [state]);
 
@@ -425,11 +425,19 @@ async function saveBlob(
 ): Promise<string | undefined> {
   const folder = await getStoredFolder();
   if (folder) {
-    const granted = await ensureWritable(folder);
-    if (granted) {
-      return await writeBlobToFolder(folder, filename, blob);
+    try {
+      const granted = await ensureWritable(folder);
+      if (granted) return await writeBlobToFolder(folder, filename, blob);
+      notify('Folder permission denied; downloading instead');
+    } catch (e) {
+      console.warn('folder write failed, downloading instead', e);
+      notify('Folder write failed; downloading instead');
     }
-    notify('Folder permission denied; falling back to save dialog');
+    // Folder save couldn't complete — go straight to the browser download
+    // rather than the picker, which also needs a fresh user activation
+    // and would just throw after the long render.
+    downloadBlobViaLink(blob, filename);
+    return;
   }
 
   const fsa = (window as unknown as {
@@ -458,6 +466,10 @@ async function saveBlob(
     }
   }
 
+  downloadBlobViaLink(blob, filename);
+}
+
+function downloadBlobViaLink(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

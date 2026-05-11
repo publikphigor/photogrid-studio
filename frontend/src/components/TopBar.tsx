@@ -58,9 +58,11 @@ export function TopBar({
         </button>
       )}
 
-      <div
-        className="flex items-center gap-2 pr-2 h-full"
-        style={{ borderRight: compact ? 'none' : '1px solid var(--line)' }}
+      <a
+        href="/"
+        className="flex items-center gap-2 pr-2 h-full no-underline"
+        style={{ borderRight: compact ? 'none' : '1px solid var(--line)', color: 'inherit' }}
+        title="Back to landing page"
       >
         <Brand />
         {!compact && (
@@ -68,7 +70,7 @@ export function TopBar({
             PhotoGrid <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>studio</span>
           </div>
         )}
-      </div>
+      </a>
 
       <button
         className="btn ghost"
