@@ -14,11 +14,10 @@ import { Slider } from '@/components/controls/Slider';
 import { Seg } from '@/components/controls/Seg';
 import { ColorField } from '@/components/controls/ColorField';
 import { Check } from '@/components/controls/Check';
-import { ingestFile } from '@/api/client';
+import type { UploadBatch } from '@/App';
 import { DEFAULT_WATERMARK } from '@/state/reducer';
 
-/** Fonts whose CSS family name has a real-or-fallback TTF on the backend
- *  container. Keep aligned with `_FONT_HINTS` in `backend/.../overlays.py`. */
+// Must stay aligned with `_FONT_HINTS` in `backend/.../overlays.py`.
 const WATERMARK_FONT_CHOICES: { value: string; label: string }[] = [
   { value: 'Helvetica, Arial, sans-serif', label: 'Helvetica' },
   { value: 'Georgia, "Times New Roman", serif', label: 'Georgia' },
@@ -32,32 +31,25 @@ interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
   uploading?: boolean;
-  setUploading?: (v: boolean) => void;
+  uploadBatch?: UploadBatch;
 }
 
-export function ContainerTab({ state, dispatch, uploading = false, setUploading }: Props) {
+export function ContainerTab({ state, dispatch, uploading = false, uploadBatch }: Props) {
   const c = state.container;
   const set = (patch: Partial<Container>) => dispatch({ type: 'SET_CONTAINER', patch });
   const setGrid = (patch: Partial<GridConfig>) => dispatch({ type: 'SET_GRID', patch });
   const containerDims = dimensionsFor(c.aspect, state.output.baseSize);
 
   const pickBgImage = () => {
-    if (uploading) return;
+    if (uploading || !uploadBatch) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
-      setUploading?.(true);
-      try {
-        const img = await ingestFile(f);
-        set({ bgImage: img });
-      } catch (e) {
-        console.error('bg upload failed', e);
-      } finally {
-        setUploading?.(false);
-      }
+      const [img] = await uploadBatch([f]);
+      if (img) set({ bgImage: img });
     };
     input.click();
   };
@@ -277,33 +269,26 @@ export function ContainerTab({ state, dispatch, uploading = false, setUploading 
         state={state}
         dispatch={dispatch}
         uploading={uploading}
-        setUploading={setUploading}
+        uploadBatch={uploadBatch}
       />
     </>
   );
 }
 
-function WatermarkSection({ state, dispatch, uploading = false, setUploading }: Props) {
+function WatermarkSection({ state, dispatch, uploading = false, uploadBatch }: Props) {
   const w = state.container.watermark ?? DEFAULT_WATERMARK;
   const setW = (patch: Partial<Watermark>) => dispatch({ type: 'SET_WATERMARK', patch });
 
   const pickWatermarkImage = () => {
-    if (uploading) return;
+    if (uploading || !uploadBatch) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
-      setUploading?.(true);
-      try {
-        const img = await ingestFile(f);
-        setW({ image: img, kind: 'image' });
-      } catch (e) {
-        console.error('watermark upload failed', e);
-      } finally {
-        setUploading?.(false);
-      }
+      const [img] = await uploadBatch([f]);
+      if (img) setW({ image: img, kind: 'image' });
     };
     input.click();
   };

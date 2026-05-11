@@ -12,7 +12,7 @@ import { Slider } from '@/components/controls/Slider';
 import { Seg } from '@/components/controls/Seg';
 import { ColorField } from '@/components/controls/ColorField';
 import { SHAPES } from '@/state/shapes';
-import { ingestFile } from '@/api/client';
+import type { UploadBatch } from '@/App';
 import {
   DEFAULT_FILTERS,
   cellPixelSize,
@@ -27,10 +27,10 @@ interface Props {
   state: PhotoGridState;
   dispatch: (a: Action) => void;
   uploading?: boolean;
-  setUploading?: (v: boolean) => void;
+  uploadBatch?: UploadBatch;
 }
 
-export function CellTab({ state, dispatch, uploading = false, setUploading }: Props) {
+export function CellTab({ state, dispatch, uploading = false, uploadBatch }: Props) {
   const selectedIds = state.selectedCellIds;
   const cell = state.cells.find((c) => c.id === selectedIds[0]);
   const multi = selectedIds.length >= 2;
@@ -47,10 +47,6 @@ export function CellTab({ state, dispatch, uploading = false, setUploading }: Pr
       </div>
     );
   }
-  // Single-select edits dispatch UPDATE_CELL; multi-select edits fan out via
-  // UPDATE_CELLS so every selected cell receives the same patch in a single
-  // undo step. Position / Span / Split are intentionally left at single-cell
-  // semantics — they have no obvious meaning for a batch.
   const set = (patch: Partial<Cell>) => {
     if (multi) {
       dispatch({ type: 'UPDATE_CELLS', ids: selectedIds, patch });
@@ -63,43 +59,31 @@ export function CellTab({ state, dispatch, uploading = false, setUploading }: Pr
   };
 
   const onPick = () => {
-    if (uploading) return;
+    if (uploading || !uploadBatch) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*';
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      setUploading?.(true);
-      try {
-        const img = await ingestFile(file);
-        const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
-        const innerW =
-          dims.w - state.container.padding * 2 - state.container.gap * (state.grid.cols - 1);
-        const innerH =
-          dims.h - state.container.padding * 2 - state.container.gap * (state.grid.rows - 1);
-        const sz = cellPixelSize(cell, state.grid, innerW, innerH, state.container.gap);
-        const scale = cell.fit === 'native' ? coverFitScale(sz.w, sz.h, img.w, img.h) : 1;
-        // Image upload always targets the primary cell, even when multi-selected
-        // (it makes no sense to dump one image into many cells).
-        dispatch({
-          type: 'UPDATE_CELL',
-          id: cell.id,
-          patch: { image: img, offsetX: 0, offsetY: 0, scale },
-        });
-      } catch (e) {
-        console.error('upload failed', e);
-      } finally {
-        setUploading?.(false);
-      }
+      const [img] = await uploadBatch([file]);
+      if (!img) return;
+      const dims = dimensionsFor(state.container.aspect, state.output.baseSize);
+      const innerW =
+        dims.w - state.container.padding * 2 - state.container.gap * (state.grid.cols - 1);
+      const innerH =
+        dims.h - state.container.padding * 2 - state.container.gap * (state.grid.rows - 1);
+      const sz = cellPixelSize(cell, state.grid, innerW, innerH, state.container.gap);
+      const scale = cell.fit === 'native' ? coverFitScale(sz.w, sz.h, img.w, img.h) : 1;
+      dispatch({
+        type: 'UPDATE_CELL',
+        id: cell.id,
+        patch: { image: img, offsetX: 0, offsetY: 0, scale },
+      });
     };
     input.click();
   };
 
-  // Filter source-of-truth for the inspector display: the primary cell's
-  // current params. Editing a slider patches every selected cell; the legacy
-  // CSS string is kept in sync so downstream code (and exports from older
-  // templates) keep working.
   const currentFilters = getCellFilters(cell);
   const setFilter = (patch: Partial<CellFilters>) => {
     const next = { ...currentFilters, ...patch };
@@ -525,8 +509,6 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
   return Math.max(min, Math.min(max, parsed));
 }
 
-/** Compact label-above-input field for the Position grid. Buffered edit keeps
- *  partial keystrokes off the reducer until commit, mirroring the Slider. */
 function PositionField({
   label,
   title,

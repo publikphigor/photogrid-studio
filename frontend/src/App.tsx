@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Github, MonitorSmartphone, X } from 'lucide-react';
 import type { CellImageRef } from '@/types';
 import { defaultState, reducer } from '@/state/reducer';
@@ -8,7 +8,9 @@ import { LeftPanel } from '@/components/LeftPanel';
 import { StageCanvas } from '@/components/StageCanvas';
 import { Inspector } from '@/components/Inspector';
 import { Toast } from '@/components/Toast';
-import { exportImage, ingestFile, uploadImage } from '@/api/client';
+import { UploadProgress, type UploadBatchState } from '@/components/UploadProgress';
+import { ExportProgress, type ExportBatchState } from '@/components/ExportProgress';
+import { exportImage, ingestFile, mapPool, uploadImage } from '@/api/client';
 import { capture } from '@/api/analytics';
 import { ensureWritable, getStoredFolder, writeBlobToFolder } from '@/api/folder';
 import { formatBytes } from '@/state/presets';
@@ -16,12 +18,11 @@ import { formatBytes } from '@/state/presets';
 type Theme = 'dark' | 'light';
 type Viewport = 'mobile' | 'tablet' | 'desktop';
 
-/** Editor is desktop-first by necessity (modifier-key drags, edge-resize, wheel
- *  zoom). Below 768px we gate to a "use a desktop" screen; 768–1599px floats
- *  the two side panels over the canvas as drawers; ≥1600px is the original
- *  three-column layout. The drawer range is wide because the three columns
- *  (248 + canvas + 320) need real room before the canvas itself becomes
- *  large enough to work in — under ~1600px the canvas is the bottleneck. */
+export type UploadBatch = (files: File[]) => Promise<CellImageRef[]>;
+
+const UPLOAD_CONCURRENCY = 4;
+
+// Mobile gates out; tablet (768-1599) floats panels as drawers; desktop is three-column.
 function measureViewport(): Viewport {
   if (typeof window === 'undefined') return 'desktop';
   const w = window.innerWidth;
@@ -44,8 +45,8 @@ export function App() {
   const viewport = useViewport();
   const [state, dispatch, history] = useHistoryReducer(reducer, defaultState());
   const [toast, setToast] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [exportProgress, setExportProgress] = useState<ExportBatchState | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadBatchState | null>(null);
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [exportInfo, setExportInfo] = useState<{
@@ -57,13 +58,14 @@ export function App() {
     () => ((localStorage.getItem('pg_theme') as Theme | null) ?? 'dark'),
   );
 
+  const uploading = uploadProgress !== null;
+  const exporting = exportProgress !== null;
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('pg_theme', theme);
   }, [theme]);
 
-  // Closing a drawer when switching back to desktop avoids surprise state when
-  // the user resizes the window with one open.
   useEffect(() => {
     if (viewport === 'desktop') {
       setLeftOpen(false);
@@ -71,8 +73,47 @@ export function App() {
     }
   }, [viewport]);
 
+  const perFileBytesRef = useRef<number[]>([]);
+  const uploadBatch = useCallback<UploadBatch>(async (files) => {
+    if (!files.length) return [];
+    const totalBytes = files.reduce((s, f) => s + f.size, 0);
+    perFileBytesRef.current = new Array(files.length).fill(0);
+    setUploadProgress({
+      done: 0,
+      total: files.length,
+      bytes: 0,
+      totalBytes,
+      activeNames: files.map((f) => f.name),
+    });
+    try {
+      const results = await mapPool(files, UPLOAD_CONCURRENCY, async (f, i) => {
+        try {
+          const ref = await ingestFile(f, ({ loaded }) => {
+            perFileBytesRef.current[i] = loaded;
+            const live = perFileBytesRef.current.reduce((s, v) => s + v, 0);
+            setUploadProgress((p) => (p ? { ...p, bytes: live } : p));
+          });
+          setUploadProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
+          return ref;
+        } catch (e) {
+          console.error('upload failed', f.name, e);
+          perFileBytesRef.current[i] = f.size;
+          setUploadProgress((p) =>
+            p
+              ? { ...p, done: p.done + 1, bytes: perFileBytesRef.current.reduce((s, v) => s + v, 0) }
+              : p,
+          );
+          return null;
+        }
+      });
+      return results.filter((r): r is CellImageRef => r !== null);
+    } finally {
+      setUploadProgress(null);
+    }
+  }, []);
+
   const handleExport = useCallback(async () => {
-    setExporting(true);
+    setExportProgress({ phase: 'render', bytes: 0, total: 0, elapsedMs: 0 });
     const cellsWithImages = state.cells.filter((c) => c.image).length;
     capture('export started', {
       output_format: state.output.format,
@@ -81,22 +122,26 @@ export function App() {
       cells_with_images: cellsWithImages,
     });
     try {
-      const res = await exportImage(state, async (missing) => {
-        const stillMissing: string[] = [];
-        for (const hash of missing) {
-          const cell = state.cells.find((c) => c.image?.hash === hash);
-          if (!cell?.image) continue;
-          const file = await pickFileMatching(cell.image.name);
-          if (!file) {
-            stillMissing.push(hash);
-            continue;
+      const res = await exportImage(
+        state,
+        async (missing) => {
+          const stillMissing: string[] = [];
+          for (const hash of missing) {
+            const cell = state.cells.find((c) => c.image?.hash === hash);
+            if (!cell?.image) continue;
+            const file = await pickFileMatching(cell.image.name);
+            if (!file) {
+              stillMissing.push(hash);
+              continue;
+            }
+            await uploadImage(file);
           }
-          await uploadImage(file);
-        }
-        if (stillMissing.length) {
-          throw new Error(`Could not re-upload: ${stillMissing.join(', ')}`);
-        }
-      });
+          if (stillMissing.length) {
+            throw new Error(`Could not re-upload: ${stillMissing.join(', ')}`);
+          }
+        },
+        (p) => setExportProgress(p),
+      );
       const savedAs = await saveBlob(res.blob, res.filename, flashToast);
       setExportInfo({
         lastSize: res.size,
@@ -105,7 +150,8 @@ export function App() {
       });
       const renameNote =
         savedAs && savedAs !== res.filename ? ` · saved as ${savedAs}` : '';
-      flashToast(`Saved · ${formatBytes(res.size)}${renameNote}`);
+      const elapsed = res.elapsedMs ? ` · ${(res.elapsedMs / 1000).toFixed(1)}s` : '';
+      flashToast(`Saved · ${formatBytes(res.size)}${elapsed}${renameNote}`);
       capture('export succeeded', {
         output_format: state.output.format,
         output_scale: state.output.scale,
@@ -125,7 +171,7 @@ export function App() {
         error: msg,
       });
     } finally {
-      setExporting(false);
+      setExportProgress(null);
     }
 
     function flashToast(msg: string) {
@@ -142,23 +188,11 @@ export function App() {
     input.onchange = async () => {
       const files = [...(input.files ?? [])];
       if (!files.length) return;
-      setUploading(true);
-      try {
-        const imgs: CellImageRef[] = [];
-        for (const f of files) {
-          try {
-            imgs.push(await ingestFile(f));
-          } catch (e) {
-            console.error('upload failed', f.name, e);
-          }
-        }
-        if (imgs.length) dispatch({ type: 'FILL_FROM_FILES', images: imgs });
-      } finally {
-        setUploading(false);
-      }
+      const imgs = await uploadBatch(files);
+      if (imgs.length) dispatch({ type: 'FILL_FROM_FILES', images: imgs });
     };
     input.click();
-  }, [dispatch]);
+  }, [dispatch, uploadBatch]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -253,7 +287,7 @@ export function App() {
             state={state}
             dispatch={dispatch}
             uploading={uploading}
-            setUploading={setUploading}
+            uploadBatch={uploadBatch}
           />
           <Drawer side="left" open={leftOpen} onClose={() => setLeftOpen(false)} width={260}>
             <LeftPanel state={state} dispatch={dispatch} uploading={uploading} />
@@ -264,7 +298,7 @@ export function App() {
               dispatch={dispatch}
               exportInfo={exportInfo}
               uploading={uploading}
-              setUploading={setUploading}
+              uploadBatch={uploadBatch}
             />
           </Drawer>
           {(leftOpen || rightOpen) && (
@@ -288,17 +322,19 @@ export function App() {
             state={state}
             dispatch={dispatch}
             uploading={uploading}
-            setUploading={setUploading}
+            uploadBatch={uploadBatch}
           />
           <Inspector
             state={state}
             dispatch={dispatch}
             exportInfo={exportInfo}
             uploading={uploading}
-            setUploading={setUploading}
+            uploadBatch={uploadBatch}
           />
         </div>
       )}
+      <UploadProgress progress={uploadProgress} />
+      <ExportProgress progress={exportProgress} />
       {toast && <Toast message={toast} />}
     </div>
   );
@@ -357,10 +393,7 @@ function Drawer({
 }
 
 function DesktopOnlyGate() {
-  // Two-level layout — outer is the viewport box, inner is the centered card.
-  // min-w-0 on the inner flex item defeats the default `min-width: auto`
-  // behaviour that lets an unbreakable word push a flex item past its
-  // max-width cap. word-break: break-word is a defensive belt-and-braces.
+  // min-w-0 + word-break defeat the default flex `min-width: auto` overflow.
   return (
     <div
       className="flex items-center justify-center overflow-hidden bg-bg text-text"
@@ -407,7 +440,7 @@ async function saveBlob(
   filename: string,
   notify: (msg: string) => void,
 ): Promise<string | undefined> {
-  // Skip the save picker after the long render — it needs fresh activation and hangs otherwise.
+  // Save picker needs fresh user activation; after long renders it just hangs.
   const folder = await getStoredFolder();
   if (folder) {
     try {

@@ -4,6 +4,7 @@ import { ContainerTab } from './ContainerTab';
 import { CellTab } from './CellTab';
 import { CanvasTab } from './CanvasTab';
 import { OutputTab } from './OutputTab';
+import type { UploadBatch } from '@/App';
 
 type TabId = 'container' | 'cell' | 'canvas' | 'output';
 
@@ -12,10 +13,10 @@ interface Props {
   dispatch: (a: Action) => void;
   exportInfo: { lastSize?: number; rendererName?: string; elapsedMs?: number };
   uploading?: boolean;
-  setUploading?: (v: boolean) => void;
+  uploadBatch?: UploadBatch;
 }
 
-export function Inspector({ state, dispatch, exportInfo, uploading = false, setUploading }: Props) {
+export function Inspector({ state, dispatch, exportInfo, uploading = false, uploadBatch }: Props) {
   const [tab, setTab] = useState<TabId>('container');
   const primaryId = state.selectedCellIds[0] ?? null;
   const selected = state.cells.find((c) => c.id === primaryId);
@@ -26,15 +27,11 @@ export function Inspector({ state, dispatch, exportInfo, uploading = false, setU
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryId]);
 
-  // Picking a text layer pivots the inspector to the Canvas tab so the user
-  // doesn't have to chase the controls down.
   useEffect(() => {
     if (state.selectedTextLayerId) setTab('canvas');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedTextLayerId]);
 
-  // Picking the watermark pivots to the Container tab — the watermark UI
-  // lives in that section.
   useEffect(() => {
     if (state.selectedWatermark) setTab('container');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -62,7 +59,7 @@ export function Inspector({ state, dispatch, exportInfo, uploading = false, setU
             state={state}
             dispatch={dispatch}
             uploading={uploading}
-            setUploading={setUploading}
+            uploadBatch={uploadBatch}
           />
         )}
         {tab === 'cell' && (
@@ -70,7 +67,7 @@ export function Inspector({ state, dispatch, exportInfo, uploading = false, setU
             state={state}
             dispatch={dispatch}
             uploading={uploading}
-            setUploading={setUploading}
+            uploadBatch={uploadBatch}
           />
         )}
         {tab === 'canvas' && <CanvasTab state={state} dispatch={dispatch} />}
