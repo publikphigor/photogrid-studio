@@ -117,11 +117,12 @@ export function App() {
       });
     } catch (e) {
       console.error(e);
-      flashToast('Export failed');
+      const msg = e instanceof Error ? e.message : String(e);
+      flashToast(`Export failed: ${msg}`);
       capture('export failed', {
         output_format: state.output.format,
         cell_count: state.cells.length,
-        error: e instanceof Error ? e.message : String(e),
+        error: msg,
       });
     } finally {
       setExporting(false);
