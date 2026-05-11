@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -115,11 +116,15 @@ async def export(req: ExportRequest, request: Request) -> Response:
         },
     )
 
-    # Frontend owns the download filename via a.download; don't set Content-Disposition.
+    # Mirror the FE filename builder (client.ts). Chrome falls back to Content-Disposition
+    # when a.download is ignored (e.g., long-render activation gap), so both must agree.
+    base = re.sub(r'[/\\:*?"<>|]', "", state.output.filename or "photogrid").strip() or "photogrid"
+    filename = f"{base}.{state.output.format}"
     return Response(
         content=data,
         media_type=mime,
         headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Photogrid-Bytes": str(len(data)),
             "X-Photogrid-Renderer": renderer.name,
             "X-Photogrid-Elapsed-Ms": str(elapsed_ms),
